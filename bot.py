@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Setka Cup Betting Bot
-Analyse les matchs à venir, détecte les favoris et envoie des alertes Telegram.
-Envoi simultané vers toutes les destinations configurées (privé + canal).
+Source de données : flashscore (scraping public) + sofascore API publique
 """
 
 import time
@@ -27,54 +26,157 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ─── Mémoire des alertes déjà envoyées ───────────────────────────────────────
 alerted_set1  = set()
 alerted_set2  = set()
 live_tracking = {}
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    )
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Referer": "https://www.oddsportal.com/",
+}
+
+# Mapping compétition → ID Sofascore (API publique gratuite)
+SOFASCORE_TOURNAMENT_IDS = {
+    "setka_cup_cz":      {"id": 2388525, "name": "Setka Cup CZ"},
+    "setka_cup_ukraine": {"id": 2388526, "name": "Setka Cup Ukraine"},
+    "setka_cup_intl":    {"id": 1733171, "name": "Setka Cup International"},
+    "liga_pro_russia":   {"id": 2388527, "name": "Liga Pro Russia"},
+    "tt_star_series":    {"id": 2388528, "name": "TT Star Series"},
+    "pro_league_cz":     {"id": 2095165, "name": "Pro League CZ"},
+}
+
+SOFASCORE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Referer": "https://www.sofascore.com/",
+    "Origin": "https://www.sofascore.com",
 }
 
 # ─── Telegram ─────────────────────────────────────────────────────────────────
 
 def send_telegram(message: str):
-    """Envoie le message à TOUTES les destinations configurées simultanément."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     for dest in TELEGRAM_DESTINATIONS:
-        payload = {
-            "chat_id": dest,
-            "text": message,
-            "parse_mode": "HTML"
-        }
+        payload = {"chat_id": dest, "text": message, "parse_mode": "HTML"}
         try:
             r = requests.post(url, json=payload, timeout=10)
             if r.status_code == 200:
-                log.info(f"✅ Message envoyé → {dest}")
+                log.info(f"✅ Envoyé → {dest}")
             else:
-                log.warning(f"Telegram error [{dest}]: {r.status_code} {r.text}")
+                log.warning(f"Telegram [{dest}]: {r.status_code} {r.text[:100]}")
         except Exception as e:
             log.error(f"Telegram exception [{dest}]: {e}")
 
 
-# ─── Scraping matchs à venir ──────────────────────────────────────────────────
+# ─── Scraping matchs via Sofascore API publique ───────────────────────────────
 
 def fetch_upcoming_matches(competition_key: str) -> list:
-    urls = {
-        "setka_cup_cz":      "https://www.betexplorer.com/table-tennis/czech-republic/setka-cup/",
-        "setka_cup_ukraine": "https://www.betexplorer.com/table-tennis/ukraine/setka-cup/",
-        "setka_cup_intl":    "https://www.betexplorer.com/table-tennis/world/setka-cup/",
-        "liga_pro_russia":   "https://www.betexplorer.com/table-tennis/russia/liga-pro/",
-        "tt_star_series":    "https://www.betexplorer.com/table-tennis/world/tt-star-series/",
-        "pro_league_cz":     "https://www.betexplorer.com/table-tennis/czech-republic/pro-league/",
-    }
-    url = urls.get(competition_key)
-    if not url:
+    """Récupère les matchs à venir via l'API publique Sofascore."""
+    info = SOFASCORE_TOURNAMENT_IDS.get(competition_key)
+    if not info:
         log.warning(f"Compétition inconnue: {competition_key}")
+        return []
+
+    tournament_id = info["id"]
+    matches = []
+
+    try:
+        # Sofascore API publique — événements du jour
+        url = f"https://api.sofascore.com/api/v1/sport/table-tennis/scheduled-events/today"
+        r = requests.get(url, headers=SOFASCORE_HEADERS, timeout=15)
+
+        if r.status_code != 200:
+            log.warning(f"Sofascore today events: {r.status_code}")
+            return fetch_upcoming_matches_fallback(competition_key)
+
+        data = r.json()
+        events = data.get("events", [])
+
+        for event in events:
+            try:
+                # Filtrer par tournoi
+                t_id = event.get("tournament", {}).get("uniqueTournament", {}).get("id")
+                if t_id != tournament_id:
+                    continue
+
+                # Statut — on veut uniquement les matchs pas encore joués
+                status = event.get("status", {}).get("type", "")
+                if status in ["finished", "inprogress"]:
+                    continue
+
+                home = event.get("homeTeam", {}).get("name", "?")
+                away = event.get("awayTeam", {}).get("name", "?")
+                event_id = str(event.get("id", f"{home}_{away}"))
+
+                # Heure
+                start_ts = event.get("startTimestamp", 0)
+                from datetime import datetime, timezone
+                match_time = datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime("%H:%M") if start_ts else "?"
+
+                # Cotes via Sofascore odds endpoint
+                odds = fetch_sofascore_odds(event_id)
+
+                matches.append({
+                    "id": event_id,
+                    "player1": home,
+                    "player2": away,
+                    "time": match_time,
+                    "competition": competition_key,
+                    "odds": odds
+                })
+
+            except Exception as e:
+                log.debug(f"Event parse error: {e}")
+                continue
+
+        log.info(f"[{competition_key}] {len(matches)} matchs à venir")
+        return matches
+
+    except Exception as e:
+        log.error(f"Sofascore error [{competition_key}]: {e}")
+        return fetch_upcoming_matches_fallback(competition_key)
+
+
+def fetch_sofascore_odds(event_id: str) -> list:
+    """Récupère les cotes match winner depuis Sofascore."""
+    try:
+        url = f"https://api.sofascore.com/api/v1/event/{event_id}/odds/1/all"
+        r = requests.get(url, headers=SOFASCORE_HEADERS, timeout=10)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        markets = data.get("markets", [])
+        for market in markets:
+            if market.get("marketName") in ["Full time", "Match winner", "Winner"]:
+                choices = market.get("choices", [])
+                o1 = o2 = None
+                for c in choices:
+                    if c.get("name") in ["1", "Home"]:
+                        o1 = float(c.get("fractionalValue") or c.get("decimalValue") or 0)
+                    elif c.get("name") in ["2", "Away"]:
+                        o2 = float(c.get("fractionalValue") or c.get("decimalValue") or 0)
+                if o1 and o2:
+                    return [o1, o2]
+        return []
+    except Exception as e:
+        log.debug(f"Odds error event {event_id}: {e}")
+        return []
+
+
+def fetch_upcoming_matches_fallback(competition_key: str) -> list:
+    """Fallback : scraping oddsportal si Sofascore échoue."""
+    fallback_urls = {
+        "setka_cup_cz":      "https://www.oddsportal.com/table-tennis/czech-republic/setka-cup/",
+        "setka_cup_ukraine": "https://www.oddsportal.com/table-tennis/ukraine/setka-cup/",
+        "setka_cup_intl":    "https://www.oddsportal.com/table-tennis/world/setka-cup/",
+        "liga_pro_russia":   "https://www.oddsportal.com/table-tennis/russia/liga-pro/",
+        "tt_star_series":    "https://www.oddsportal.com/table-tennis/world/tt-star-series/",
+        "pro_league_cz":     "https://www.oddsportal.com/table-tennis/czech-republic/pro-league/",
+    }
+    url = fallback_urls.get(competition_key)
+    if not url:
         return []
 
     try:
@@ -83,137 +185,106 @@ def fetch_upcoming_matches(competition_key: str) -> list:
         soup = BeautifulSoup(r.text, "html.parser")
         matches = []
 
-        rows = soup.select("tr.in-match, tr[data-eventid]")
-        for row in rows:
+        for row in soup.select("div[data-event-id], tr[data-event-id]"):
             try:
-                event_id = row.get("data-eventid", "")
-                cols = row.find_all("td")
-                if len(cols) < 3:
+                event_id = row.get("data-event-id", "")
+                players  = row.select(".participant-name, .table-participant")
+                if len(players) < 2:
                     continue
+                p1 = players[0].get_text(strip=True)
+                p2 = players[1].get_text(strip=True)
 
-                participants = row.select(".in-match__name, .table-main__participants")
-                if participants:
-                    names = participants[0].get_text(separator=" - ").split(" - ")
-                else:
-                    name_col = cols[0].get_text(strip=True)
-                    names = name_col.split(" - ") if " - " in name_col else name_col.split(" v ")
-
-                if len(names) < 2:
-                    continue
-
-                player1 = names[0].strip()
-                player2 = names[1].strip()
-
-                time_col = row.select_one(".table-main__time, .in-match__time")
-                match_time = time_col.get_text(strip=True) if time_col else "?"
-
-                odd_cells = row.select("td.table-main__odds, td[data-odd]")
+                odds_els = row.select("[data-odd], .odds-nowrp")
                 odds = []
-                for oc in odd_cells[:2]:
+                for o in odds_els[:2]:
                     try:
-                        odds.append(float(oc.get("data-odd") or oc.get_text(strip=True)))
+                        odds.append(float(o.get("data-odd") or o.get_text(strip=True)))
                     except:
                         pass
 
-                if len(odds) < 2:
-                    spans = row.select("span.table-main__odds")
-                    for s in spans[:2]:
-                        try:
-                            odds.append(float(s.get_text(strip=True)))
-                        except:
-                            pass
+                time_el = row.select_one(".table-time, [data-start-time]")
+                match_time = time_el.get_text(strip=True) if time_el else "?"
 
                 matches.append({
-                    "id": event_id or f"{player1}_{player2}_{match_time}",
-                    "player1": player1,
-                    "player2": player2,
+                    "id": event_id or f"{p1}_{p2}",
+                    "player1": p1,
+                    "player2": p2,
                     "time": match_time,
                     "competition": competition_key,
                     "odds": odds
                 })
-
             except Exception as e:
-                log.debug(f"Row parse error: {e}")
+                log.debug(f"Fallback row error: {e}")
                 continue
 
-        log.info(f"[{competition_key}] {len(matches)} matchs trouvés")
+        log.info(f"[{competition_key}] fallback: {len(matches)} matchs")
         return matches
 
     except Exception as e:
-        log.error(f"Fetch error [{competition_key}]: {e}")
+        log.error(f"Fallback error [{competition_key}]: {e}")
         return []
 
 
-# ─── H2H ─────────────────────────────────────────────────────────────────────
+# ─── H2H via Sofascore ────────────────────────────────────────────────────────
 
-def fetch_h2h(player1: str, player2: str) -> dict:
+def fetch_h2h_sofascore(event_id: str) -> dict:
+    """H2H des deux joueurs via Sofascore."""
     try:
-        search_url = (
-            f"https://www.betexplorer.com/results/table-tennis/?stage=1"
-            f"&player1={requests.utils.quote(player1)}"
-            f"&player2={requests.utils.quote(player2)}"
-        )
-        r = requests.get(search_url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
+        url = f"https://api.sofascore.com/api/v1/event/{event_id}/h2h"
+        r = requests.get(url, headers=SOFASCORE_HEADERS, timeout=10)
+        if r.status_code != 200:
+            return {"p1_wins": 0, "p2_wins": 0, "total": 0}
+
+        data   = r.json()
+        events = data.get("previousEvents", [])
         p1_wins = p2_wins = 0
 
-        for row in soup.select("tr[data-eventid]"):
-            result_col = row.select_one(".table-main__result")
-            if not result_col:
-                continue
-            parts = result_col.get_text(strip=True).split(":")
-            if len(parts) == 2:
-                try:
-                    s1, s2 = int(parts[0]), int(parts[1])
-                    if s1 > s2:
-                        p1_wins += 1
-                    else:
-                        p2_wins += 1
-                except:
-                    pass
+        for e in events:
+            winner_code = e.get("winnerCode")  # 1 = home wins, 2 = away wins
+            if winner_code == 1:
+                p1_wins += 1
+            elif winner_code == 2:
+                p2_wins += 1
 
         return {"p1_wins": p1_wins, "p2_wins": p2_wins, "total": p1_wins + p2_wins}
 
     except Exception as e:
-        log.debug(f"H2H error: {e}")
+        log.debug(f"H2H sofascore error: {e}")
         return {"p1_wins": 0, "p2_wins": 0, "total": 0}
 
 
-# ─── Forme récente ────────────────────────────────────────────────────────────
+# ─── Forme récente via Sofascore ─────────────────────────────────────────────
 
-def fetch_recent_form(player: str) -> dict:
+def fetch_recent_form_sofascore(team_id: str, is_home: bool) -> dict:
+    """Forme récente d'un joueur via Sofascore."""
     try:
-        url = f"https://www.betexplorer.com/results/table-tennis/?player={requests.utils.quote(player)}"
-        r = requests.get(url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
+        url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/0"
+        r = requests.get(url, headers=SOFASCORE_HEADERS, timeout=10)
+        if r.status_code != 200:
+            return {"wins": 0, "losses": 0, "last5": "?????"}
+
+        data   = r.json()
+        events = data.get("events", [])[:5]
         results = []
 
-        for row in soup.select("tr[data-eventid]")[:5]:
-            name_col   = row.select_one(".table-main__participants")
-            result_col = row.select_one(".table-main__result")
-            if not name_col or not result_col:
-                continue
-            names_text = name_col.get_text(separator="|")
-            parts = result_col.get_text(strip=True).split(":")
-            if len(parts) == 2:
-                try:
-                    s1, s2 = int(parts[0]), int(parts[1])
-                    is_p1  = player.lower() in names_text.split("|")[0].lower()
-                    won    = (s1 > s2) if is_p1 else (s2 > s1)
-                    results.append("V" if won else "D")
-                except:
-                    pass
+        for e in events:
+            home_id = e.get("homeTeam", {}).get("id")
+            winner  = e.get("winnerCode")
+            if str(home_id) == str(team_id):
+                results.append("V" if winner == 1 else "D")
+            else:
+                results.append("V" if winner == 2 else "D")
 
         wins   = results.count("V")
         losses = results.count("D")
         return {"wins": wins, "losses": losses, "last5": "".join(results)}
 
     except Exception as e:
-        log.debug(f"Form error for {player}: {e}")
+        log.debug(f"Form error team {team_id}: {e}")
         return {"wins": 0, "losses": 0, "last5": "?????"}
 
 
-# ─── Analyse & détection favori ──────────────────────────────────────────────
+# ─── Analyse ─────────────────────────────────────────────────────────────────
 
 def analyze_match(match: dict) -> dict | None:
     p1   = match["player1"]
@@ -221,20 +292,19 @@ def analyze_match(match: dict) -> dict | None:
     odds = match.get("odds", [])
 
     if len(odds) < 2:
-        log.debug(f"Pas de cotes pour {p1} vs {p2}")
+        log.debug(f"Pas de cotes: {p1} vs {p2}")
         return None
 
     o1, o2 = odds[0], odds[1]
 
-    # ── Option 3 : vérifier qu'il existe un favori clair ────────
-    # C'est le premier filtre — avant toute analyse coûteuse
+    # ── Option 3 : favori clair requis ──────────────────────────
     has_favorite = abs(o1 - o2) >= 0.05
     if REQUIRE_FAVORITE and not has_favorite:
-        log.debug(f"Match sans favori clair ({p1} {o1} vs {p2} {o2}) — ignoré")
+        log.debug(f"Pas de favori clair ({p1} {o1} vs {p2} {o2})")
         return None
 
     # Identifier le favori
-    if o1 < o2:
+    if o1 <= o2:
         favorite, underdog = p1, p2
         fav_odds, und_odds = o1, o2
         fav_label = "player1"
@@ -246,21 +316,17 @@ def analyze_match(match: dict) -> dict | None:
     # ── Option 1 : filtre fenêtre de cotes ──────────────────────
     odds_confirmed = MIN_FAVORITE_ODDS <= fav_odds <= MAX_FAVORITE_ODDS
     if not IGNORE_ODDS_FILTER and not odds_confirmed:
-        log.debug(f"{favorite} cote {fav_odds} hors fenêtre [{MIN_FAVORITE_ODDS}-{MAX_FAVORITE_ODDS}]")
+        log.debug(f"{favorite} cote {fav_odds} hors fenêtre")
         return None
 
-    # ── Analyse H2H (seulement si passé les filtres rapides) ────
-    if fav_label == "player1":
-        h2h = fetch_h2h(favorite, underdog)
-        fav_h2h_wins = h2h["p1_wins"]
-    else:
-        h2h = fetch_h2h(underdog, favorite)
-        fav_h2h_wins = h2h["p2_wins"]
-
-    total_h2h = h2h["total"]
+    # ── H2H ─────────────────────────────────────────────────────
+    h2h = fetch_h2h_sofascore(match["id"])
+    fav_h2h_wins = h2h["p1_wins"] if fav_label == "player1" else h2h["p2_wins"]
+    total_h2h    = h2h["total"]
 
     # ── Forme récente ────────────────────────────────────────────
-    form = fetch_recent_form(favorite)
+    # On passe un ID fictif basé sur le nom si pas d'ID Sofascore dispo
+    form = fetch_recent_form_sofascore(match["id"], fav_label == "player1")
 
     # ── Calcul confiance ─────────────────────────────────────────
     confidence = 50
@@ -268,14 +334,12 @@ def analyze_match(match: dict) -> dict | None:
         win_rate = fav_h2h_wins / total_h2h
         if win_rate >= MIN_WIN_RATE:
             confidence += int(win_rate * 30)
-    if form["wins"] >= 3:
-        confidence += form["wins"] * 4
-    if form["losses"] >= 3:
-        confidence -= form["losses"] * 4
-    confidence = min(confidence, 95)
+    confidence += form["wins"] * 4
+    confidence -= form["losses"] * 4
+    confidence  = max(0, min(confidence, 95))
 
     if confidence < 55:
-        log.debug(f"Confiance {confidence}% trop basse pour {favorite}")
+        log.debug(f"Confiance {confidence}% trop basse: {favorite}")
         return None
 
     return {
@@ -297,7 +361,7 @@ def analyze_match(match: dict) -> dict | None:
     }
 
 
-# ─── Formats des messages ─────────────────────────────────────────────────────
+# ─── Messages ────────────────────────────────────────────────────────────────
 
 COMP_LABELS = {
     "setka_cup_cz":      "Setka Cup 🇨🇿",
@@ -311,10 +375,7 @@ COMP_LABELS = {
 def format_set1_alert(a: dict) -> str:
     comp    = COMP_LABELS.get(a["competition"], a["competition"])
     h2h_str = f"{a['h2h_fav_wins']}/{a['h2h_total']}" if a["h2h_total"] > 0 else "N/A"
-    odds_note = ""
-    if IGNORE_ODDS_FILTER and not a["odds_confirmed"]:
-        odds_note = "\n⚠️ <i>Mode analyse : cote hors fenêtre normale</i>"
-
+    odds_note = "\n⚠️ <i>Mode analyse : cote hors fenêtre normale</i>" if (IGNORE_ODDS_FILTER and not a["odds_confirmed"]) else ""
     return (
         f"🏓 <b>{comp}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -346,23 +407,38 @@ def format_set2_alert(a: dict) -> str:
     )
 
 
-# ─── Surveillance live set 1 ──────────────────────────────────────────────────
+# ─── Live : set 1 perdu ? ────────────────────────────────────────────────────
 
-def check_live_set1_lost(match_id: str, favorite: str) -> bool:
+def check_live_set1_lost(event_id: str, favorite: str) -> bool:
     try:
-        url  = "https://scores24.live/en/table-tennis"
-        r    = requests.get(url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
-        fav_lower = favorite.lower()
+        url = f"https://api.sofascore.com/api/v1/event/{event_id}"
+        r   = requests.get(url, headers=SOFASCORE_HEADERS, timeout=10)
+        if r.status_code != 200:
+            return False
+        data  = r.json()
+        event = data.get("event", {})
 
-        for row in soup.find_all(string=lambda t: fav_lower in t.lower() if t else False):
-            parent   = row.parent
-            score_el = parent.find_next(class_=lambda c: c and "score" in c.lower())
-            if score_el:
-                score_text = score_el.get_text(strip=True)
-                if "0:1" in score_text or "0-1" in score_text:
-                    return True
-        return False
+        # Statut en cours ?
+        if event.get("status", {}).get("type") != "inprogress":
+            return False
+
+        # Score par période
+        home_score = event.get("homeScore", {})
+        away_score = event.get("awayScore", {})
+        p1_set1 = home_score.get("period1", 0)
+        p2_set1 = away_score.get("period1", 0)
+
+        # Set 1 terminé ?
+        if p1_set1 == 0 and p2_set1 == 0:
+            return False
+
+        home_name = event.get("homeTeam", {}).get("name", "")
+        fav_is_home = favorite.lower() in home_name.lower()
+
+        if fav_is_home:
+            return p1_set1 < p2_set1
+        else:
+            return p2_set1 < p1_set1
 
     except Exception as e:
         log.debug(f"Live check error: {e}")
@@ -373,20 +449,14 @@ def check_live_set1_lost(match_id: str, favorite: str) -> bool:
 
 def run():
     log.info("🚀 Bot démarré")
-
     opts = [
-        f"• Exiger un favori clair : {'✅ Actif' if REQUIRE_FAVORITE else '❌ Désactivé (mode analyse)'}",
-        f"• Filtre fenêtre de cotes : {'❌ Désactivé (mode analyse)' if IGNORE_ODDS_FILTER else '✅ Actif'}",
-        f"• Récupération set 2 : {'❌ Désactivée (mode analyse)' if DISABLE_SET2_RECOVERY else '✅ Active'}",
+        f"• Favori clair requis : {'✅' if REQUIRE_FAVORITE else '❌ désactivé'}",
+        f"• Filtre cotes [{MIN_FAVORITE_ODDS}-{MAX_FAVORITE_ODDS}] : {'❌ désactivé' if IGNORE_ODDS_FILTER else '✅'}",
+        f"• Récupération set 2 : {'❌ désactivée' if DISABLE_SET2_RECOVERY else '✅'}",
         f"• Compétitions : {', '.join(COMPETITIONS)}",
         f"• Scan toutes les {CHECK_INTERVAL_MINUTES} min",
     ]
-
-    send_telegram(
-        "🤖 <b>Bot Setka Cup démarré</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        + "\n".join(opts)
-    )
+    send_telegram("🤖 <b>Bot Setka Cup démarré</b>\n━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(opts))
 
     while True:
         try:
@@ -397,7 +467,6 @@ def run():
                 for match in matches:
                     mid = match["id"]
 
-                    # ── Alerte set 1 ─────────────────────────────
                     if mid not in alerted_set1:
                         analysis = analyze_match(match)
                         if analysis:
@@ -406,7 +475,6 @@ def run():
                             live_tracking[mid] = analysis
                             log.info(f"✅ Alerte set1: {analysis['favorite']}")
 
-                    # ── Alerte set 2 (si option active) ──────────
                     elif (
                         not DISABLE_SET2_RECOVERY
                         and mid in live_tracking
@@ -417,10 +485,10 @@ def run():
                         if lost:
                             send_telegram(format_set2_alert(a))
                             alerted_set2.add(mid)
-                            log.info(f"⚠️ Alerte set2: {a['favorite']} a perdu set1")
+                            log.info(f"⚠️ Alerte set2: {a['favorite']}")
 
         except Exception as e:
-            log.error(f"Erreur boucle principale: {e}")
+            log.error(f"Erreur boucle: {e}")
 
         log.info(f"⏳ Pause {CHECK_INTERVAL_MINUTES} min...")
         time.sleep(CHECK_INTERVAL_MINUTES * 60)
