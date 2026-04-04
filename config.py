@@ -3,11 +3,11 @@
 # ═══════════════════════════════════════════════════════════════
 
 # ── Telegram ────────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN = "METS_TON_BOT_TOKEN_ICI"
+TELEGRAM_BOT_TOKEN = "8689450824:AAE9NAsDGI9CdLP6qcOvQ3pM5kMnN_6jb-Y"
 
 TELEGRAM_DESTINATIONS = [
-    "METS_TON_CHAT_ID_PERSONNEL_ICI",   # Ton ID perso
-    "@nom_de_ton_canal_prive",           # Ton canal privé
+    "406477026",   # Ton ID perso
+    "-1003521219534",           # Ton canal privé
 ]
 
 # ── Compétitions surveillées ────────────────────────────────────
