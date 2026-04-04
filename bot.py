@@ -361,36 +361,51 @@ def process_alert(match: dict):
     if mid in alerted_set1:
         return
 
-    passed, fav_odds, und_odds, fav_name, und_name = quick_filter(match)
-    if not passed:
+    odds = match.get("odds", [])
+    if len(odds) < 2:
         return
 
+    o1, o2 = odds[0], odds[1]
+
+    # ── Option 3 : filtre d'entrée — match avec favori ? ────────
+    if REQUIRE_FAVORITE and min(o1, o2) > MAX_FAVORITE_ODDS:
+        return
+
+    # ── Analyse structurelle (indépendante des cotes) ────────────
     verdict = analyze_match_logic(match)
     if not verdict:
         return
 
-    # Le favori aux cotes doit correspondre au favori structurel
-    if verdict["name"] != fav_name and not IGNORE_ODDS_FILTER:
-        log.debug(f"Divergence cote/structure pour {match['player1']} vs {match['player2']}")
+    # Cote du joueur désigné par l'analyse
+    if verdict["bet_on"] == "player1":
+        fav_name, und_name = match["player1"], match["player2"]
+        fav_odds = o1
+    else:
+        fav_name, und_name = match["player2"], match["player1"]
+        fav_odds = o2
+
+    # ── Option 1 : filtre de sortie — cote du gagnant désigné ───
+    odds_in_window = MIN_FAVORITE_ODDS <= fav_odds <= MAX_FAVORITE_ODDS
+    if not IGNORE_ODDS_FILTER and not odds_in_window:
         return
 
     analysis = {
-        "match_id":    mid,
-        "player1":     match["player1"],
-        "player2":     match["player2"],
-        "favorite":    verdict["name"],
-        "underdog":    und_name if verdict["name"] == fav_name else fav_name,
-        "fav_odds":    fav_odds,
-        "confidence":  verdict["confidence"],
-        "time":        match["time"],
-        "competition": match["competition"],
-        "odds_in_window": MIN_FAVORITE_ODDS <= fav_odds <= MAX_FAVORITE_ODDS,
+        "match_id":       mid,
+        "player1":        match["player1"],
+        "player2":        match["player2"],
+        "favorite":       fav_name,
+        "underdog":       und_name,
+        "fav_odds":       fav_odds,
+        "confidence":     verdict["confidence"],
+        "time":           match["time"],
+        "competition":    match["competition"],
+        "odds_in_window": odds_in_window,
     }
 
     send_telegram(format_set1_alert(analysis), ALERT_DESTINATIONS)
     alerted_set1.add(mid)
     live_tracking[mid] = analysis
-    log.info(f"✅ Alerte set1: {analysis['favorite']} vs {analysis['underdog']}")
+    log.info(f"✅ Alerte set1: {fav_name} vs {und_name}")
 
 # ─── Section A : Surveillance set 1 perdu ────────────────────────────────────
 
