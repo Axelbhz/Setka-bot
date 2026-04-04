@@ -27,7 +27,7 @@ MAX_FAVORITE_ODDS = 1.70
 # ── Option 1 : IGNORER le filtre de cotes ──────────────────────
 # False (défaut) = cote entre MIN et MAX requise
 # True           = alerte même si hors fenêtre (mode analyse)
-IGNORE_ODDS_FILTER = False
+IGNORE_ODDS_FILTER = True
 
 # ── Option 2 : DÉSACTIVER la récupération sur le 2ème set ──────
 # False (défaut) = alerte set 2 si set 1 perdu
