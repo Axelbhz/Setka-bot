@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 """
-Setka Cup Betting Bot
-Source : score-tennis.com
-─────────────────────────
-Section A : Alertes paris (toutes les 3 min)
-Section B : Récap matin (08h UTC) + après-midi (14h UTC)
-Bilan      : Quotidien + hebdomadaire à minuit
+Setka Cup Betting Bot - Source: score-tennis.com
 """
 
 import re
@@ -36,7 +31,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ─── Persistance bilan ────────────────────────────────────────────────────────
 BILAN_FILE = Path("bilan.json")
 
 def load_bilan() -> dict:
@@ -54,13 +48,11 @@ def load_bilan() -> dict:
 def save_bilan(b: dict):
     BILAN_FILE.write_text(json.dumps(b, indent=2))
 
-# ─── Mémoire session ──────────────────────────────────────────────────────────
 alerted_set1  = set()
 alerted_set2  = set()
 live_tracking = {}
 results_seen  = set()
 
-# Heures UTC des récaps fixes
 RECAP_HOURS_UTC = [8, 14]
 
 HEADERS = {
@@ -89,7 +81,7 @@ COMP_LABELS = {
     "tt_cup_cz":         "TT Cup 🇨🇿",
 }
 
-# ─── Telegram ─────────────────────────────────────────────────────────────────
+# ─── Telegram ────────────────────────────────────────────────────────────────
 
 def send_telegram(message: str, destinations: list):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -105,7 +97,7 @@ def send_telegram(message: str, destinations: list):
         except Exception as e:
             log.error(f"Telegram exception [{dest}]: {e}")
 
-# ─── Fetch page ───────────────────────────────────────────────────────────────
+# ─── Fetch ───────────────────────────────────────────────────────────────────
 
 def fetch_page(url: str) -> BeautifulSoup | None:
     try:
@@ -116,93 +108,61 @@ def fetch_page(url: str) -> BeautifulSoup | None:
         log.error(f"Fetch error [{url}]: {e}")
         return None
 
-def fetch_raw(url: str) -> str | None:
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        r.raise_for_status()
-        return r.text
-    except Exception as e:
-        log.error(f"Fetch raw error [{url}]: {e}")
-        return None
-
-# ─── Scraping matchs à venir ──────────────────────────────────────────────────
+# ─── Parsing matchs ───────────────────────────────────────────────────────────
 
 def parse_upcoming_matches(competition_key: str) -> list:
     """
-    Parse score-tennis.com/up-games/ en utilisant BeautifulSoup
-    pour extraire les noms depuis les liens /players/ directement.
-    Structure : bloc par match contenant :
-      - date/heure dans le texte
-      - nom compétition dans un div.tag
-      - W1/W2 dans le texte
-      - deux liens <a href="/players/..."> pour les joueurs
-      - score H2H "X : Y" + "score of recent face-to-face"
+    Parse score-tennis.com/up-games/ par blocs date/heure.
+    Extrait les noms depuis les liens /players/ dans chaque bloc HTML.
     """
-    html = fetch_raw(f"{BASE_URL}/up-games/")
-    if not html:
+    try:
+        r = requests.get(f"{BASE_URL}/up-games/", headers=HEADERS, timeout=15)
+        if r.status_code != 200:
+            log.warning(f"up-games: {r.status_code}")
+            return []
+    except Exception as e:
+        log.error(f"up-games error: {e}")
         return []
 
-    soup         = BeautifulSoup(html, "html.parser")
+    soup         = BeautifulSoup(r.text, "html.parser")
     section_name = COMP_SECTION_NAMES.get(competition_key, "")
     today_str    = datetime.now(tz=timezone.utc).strftime("%d.%m")
     matches      = []
 
-    # On cherche tous les liens joueurs
-    player_links = soup.find_all("a", href=re.compile(r"^https?://score-tennis\.com/players/"))
+    # Découper le HTML en blocs par date/heure
+    # Chaque bloc commence par un pattern "DD.MM HH:MM"
+    raw_html = r.text
+    # Split sur les balises contenant la date/heure
+    # On utilise le texte brut splité
+    text_blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', raw_html)
 
-    i = 0
-    while i < len(player_links) - 1:
-        a1 = player_links[i]
-        a2 = player_links[i + 1]
+    i = 1
+    while i < len(text_blocks) - 1:
+        header     = text_blocks[i]       # "05.04 14:30"
+        block_html = text_blocks[i + 1]   # HTML du bloc
 
-        p1 = " ".join(a1.get_text(strip=True).split())
-        p2 = " ".join(a2.get_text(strip=True).split())
-
-        if not p1 or not p2:
-            i += 1
-            continue
-
-        # Chercher le conteneur parent commun
-        # Remonter depuis a1 pour trouver le bloc du match
-        parent = a1.parent
-        for _ in range(8):
-            if parent is None:
-                break
-            parent_text = parent.get_text()
-            if "face-to-face" in parent_text and p2 in parent_text:
-                break
-            parent = parent.parent
-
-        if parent is None:
-            i += 1
-            continue
-
-        block_text = parent.get_text(separator="\n")
-
-        # Vérifier que P2 est bien dans ce bloc
-        if p2 not in block_text:
-            i += 1
-            continue
-
-        # Date/heure
-        time_m = re.search(r'(\d{2}\.\d{2})\s+(\d{2}:\d{2})', block_text)
-        if not time_m:
+        date_m = re.match(r'(\d{2}\.\d{2})\s+(\d{2}:\d{2})', header)
+        if not date_m:
             i += 2
             continue
 
-        match_date = time_m.group(1)
-        match_time = time_m.group(2)
+        match_date = date_m.group(1)
+        match_time = date_m.group(2)
 
         if match_date != today_str:
             i += 2
             continue
 
-        # Compétition
-        if section_name and section_name not in block_text:
+        # Vérifier compétition dans le texte brut du bloc
+        if section_name and section_name not in block_html:
             i += 2
             continue
 
-        # Cotes
+        # Parser le HTML du bloc pour extraire les infos
+        block_soup = BeautifulSoup(block_html, "html.parser")
+        block_text = block_soup.get_text(separator="\n")
+
+        # Cotes W1/W2
         w1_m = re.search(r'W1[^:]*:\s*([\d.]+)', block_text)
         w2_m = re.search(r'W2[^:]*:\s*([\d.]+)', block_text)
         if not w1_m or not w2_m:
@@ -212,7 +172,31 @@ def parse_upcoming_matches(competition_key: str) -> list:
         w1 = float(w1_m.group(1))
         w2 = float(w2_m.group(1))
 
-        # H2H : chercher "X : Y" avant "face-to-face"
+        # Noms depuis les liens /players/ dans ce bloc
+        player_links = block_soup.find_all(
+            "a",
+            href=re.compile(r"score-tennis\.com/players/")
+        )
+        if len(player_links) < 2:
+            # Fallback : chercher les liens relatifs aussi
+            player_links = block_soup.find_all(
+                "a",
+                href=re.compile(r"/players/")
+            )
+
+        if len(player_links) < 2:
+            log.debug(f"Pas assez de liens joueurs à {match_time}")
+            i += 2
+            continue
+
+        p1 = " ".join(player_links[0].get_text(strip=True).split())
+        p2 = " ".join(player_links[1].get_text(strip=True).split())
+
+        if not p1 or not p2:
+            i += 2
+            continue
+
+        # H2H : "X : Y\nscore of recent face-to-face"
         h2h_m  = re.search(r'(\d+)\s*:\s*(\d+)\s*\n?\s*score of recent face-to-face', block_text)
         h2h_p1 = h2h_p2 = 0
         if h2h_m:
@@ -255,7 +239,7 @@ def analyze_match_logic(match: dict) -> dict | None:
 
     return None
 
-# ─── Traitement alerte paris ──────────────────────────────────────────────────
+# ─── Alerte paris ────────────────────────────────────────────────────────────
 
 def process_alert(match: dict):
     mid = match["id"]
@@ -269,6 +253,7 @@ def process_alert(match: dict):
     o1, o2 = odds[0], odds[1]
     log.info(f"🔍 {match['player1']} ({o1}) vs {match['player2']} ({o2}) | H2H: {match.get('h2h')}")
 
+    # Option 3 : favori requis
     if REQUIRE_FAVORITE and min(o1, o2) > MAX_FAVORITE_ODDS:
         log.info(f"❌ Pas de favori clair")
         return
@@ -284,6 +269,7 @@ def process_alert(match: dict):
         fav_name, und_name = match["player2"], match["player1"]
         fav_odds = o2
 
+    # Option 1 : filtre fenêtre de cotes
     odds_in_window = MIN_FAVORITE_ODDS <= fav_odds <= MAX_FAVORITE_ODDS
     if not IGNORE_ODDS_FILTER and not odds_in_window:
         log.info(f"❌ Cote {fav_odds} hors fenêtre [{MIN_FAVORITE_ODDS}-{MAX_FAVORITE_ODDS}]")
@@ -310,7 +296,7 @@ def process_alert(match: dict):
     live_tracking[mid] = analysis
     log.info(f"✅ Alerte set1: {fav_name} vs {und_name}")
 
-# ─── Surveillance live + résultats ───────────────────────────────────────────
+# ─── Live + résultats ─────────────────────────────────────────────────────────
 
 def check_live_and_results():
     if not live_tracking:
@@ -319,7 +305,6 @@ def check_live_and_results():
     bilan   = load_bilan()
     changed = False
 
-    # Scrape la page résultats du jour
     soup = fetch_page(f"{BASE_URL}/games/")
     if not soup:
         return
@@ -334,38 +319,32 @@ def check_live_and_results():
         p2_first  = a["player2"].split()[0].lower()
         fav_is_p1 = a["favorite"] == a["player1"]
 
-        # Chercher le match dans les résultats
-        # Format sur games/ : "Nom1 – Nom2" puis score "3:1"
         idx = content.lower().find(p1_first)
         if idx == -1:
             continue
 
         snippet = content[idx:idx+300]
-
-        # Vérifier que P2 est aussi dans le snippet
         if p2_first not in snippet.lower():
             continue
 
-        # Chercher le score final ex: "3:1" ou "3:2"
-        score_m = re.search(r'\b([0-3])\s*:\s*([0-3])\b', snippet)
+        # Score final
+        score_m = re.search(r'\b([0-4])\s*:\s*([0-4])\b', snippet)
         if not score_m:
-            # Match pas encore terminé — chercher score set 1 en live
-            # Format live : "0 : 1" entre les noms
-            set_score_m = re.search(r'\b0\s*:\s*1\b|\b1\s*:\s*0\b', snippet)
-            if set_score_m and mid not in alerted_set2 and not DISABLE_SET2_RECOVERY:
-                score_txt = set_score_m.group()
-                parts     = re.findall(r'\d+', score_txt)
-                ss1, ss2  = int(parts[0]), int(parts[1])
-                fav_lost  = (ss1 < ss2) if fav_is_p1 else (ss2 < ss1)
-                if fav_lost:
-                    send_telegram(format_set2_alert(a), ALERT_DESTINATIONS)
-                    alerted_set2.add(mid)
-                    log.info(f"⚠️ Alerte set2: {a['favorite']}")
+            # Chercher set 1 perdu en cours
+            if not DISABLE_SET2_RECOVERY and mid not in alerted_set2:
+                set_m = re.search(r'\b0\s*:\s*1\b|\b1\s*:\s*0\b', snippet)
+                if set_m:
+                    parts = re.findall(r'\d+', set_m.group())
+                    ss1, ss2     = int(parts[0]), int(parts[1])
+                    fav_lost_s1  = (ss1 < ss2) if fav_is_p1 else (ss2 < ss1)
+                    if fav_lost_s1:
+                        send_telegram(format_set2_alert(a), ALERT_DESTINATIONS)
+                        alerted_set2.add(mid)
+                        log.info(f"⚠️ Alerte set2: {a['favorite']}")
             continue
 
-        # Match terminé — enregistrer le bilan
-        s1, s2   = int(score_m.group(1)), int(score_m.group(2))
-        fav_won  = (s1 > s2) if fav_is_p1 else (s2 > s1)
+        s1, s2  = int(score_m.group(1)), int(score_m.group(2))
+        fav_won = (s1 > s2) if fav_is_p1 else (s2 > s1)
 
         if mid in alerted_set1 and mid not in alerted_set2:
             key = "won" if fav_won else "lost"
@@ -386,7 +365,7 @@ def check_live_and_results():
     if changed:
         save_bilan(bilan)
 
-# ─── Section B : Récap à heures fixes ────────────────────────────────────────
+# ─── Récap à heures fixes ─────────────────────────────────────────────────────
 
 def build_recap(all_matches: list) -> str | None:
     grouped = {}
@@ -397,11 +376,11 @@ def build_recap(all_matches: list) -> str | None:
             continue
         o1, o2 = odds[0], odds[1]
 
-        # Option 3 : favori requis
+        # Option 3
         if REQUIRE_FAVORITE and min(o1, o2) > MAX_FAVORITE_ODDS:
             continue
 
-        # Option 1 : filtre fenêtre de cotes
+        # Option 1
         if not IGNORE_ODDS_FILTER:
             if not (MIN_FAVORITE_ODDS <= min(o1, o2) <= MAX_FAVORITE_ODDS):
                 continue
@@ -423,12 +402,11 @@ def build_recap(all_matches: list) -> str | None:
     return msg
 
 def recap_thread():
-    """Thread qui envoie le récap à heures fixes."""
-    sent_hours = set()  # {(date_str, hour)}
+    sent_hours = set()
 
     while True:
-        now  = datetime.now(tz=timezone.utc)
-        key  = (now.strftime("%Y-%m-%d"), now.hour)
+        now = datetime.now(tz=timezone.utc)
+        key = (now.strftime("%Y-%m-%d"), now.hour)
 
         if now.hour in RECAP_HOURS_UTC and key not in sent_hours:
             try:
@@ -444,9 +422,8 @@ def recap_thread():
                     log.info(f"📋 Récap {now.hour}h : aucun match filtré")
 
                 sent_hours.add(key)
-                # Garder seulement les 10 dernières clés
                 if len(sent_hours) > 10:
-                    sent_hours.pop()
+                    sent_hours = set(list(sent_hours)[-10:])
             except Exception as e:
                 log.error(f"Recap thread error: {e}")
 
@@ -537,7 +514,7 @@ def run():
         f"• Filtre cotes [{MIN_FAVORITE_ODDS}-{MAX_FAVORITE_ODDS}] : {'❌ désactivé' if IGNORE_ODDS_FILTER else '✅'}",
         f"• Récupération set 2 : {'❌ désactivée' if DISABLE_SET2_RECOVERY else '✅'}",
         f"• Compétitions : {', '.join(COMPETITIONS)}",
-        f"• Récap à 08h00 et 14h00 UTC",
+        f"• Récap à {RECAP_HOURS_UTC}h UTC",
         f"• Source : score-tennis.com",
     ]
     send_telegram(
@@ -554,7 +531,6 @@ def run():
                 matches = parse_upcoming_matches(comp)
                 for match in matches:
                     process_alert(match)
-
             check_live_and_results()
 
         except Exception as e:
