@@ -553,8 +553,8 @@ def format_bilan(b: dict, period: str) -> str:
 
 def bilan_thread():
     """Thread dédié aux bilans — tourne en parallèle."""
-    last_daily  = ""
-    last_weekly = ""
+    last_daily  = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    last_weekly = datetime.now(tz=timezone.utc).strftime("%Y-W%W")
 
     while True:
         now  = datetime.now(tz=timezone.utc)
@@ -562,26 +562,25 @@ def bilan_thread():
         week = now.strftime("%Y-W%W")
 
         # Bilan quotidien à minuit
-        if now.hour == 0 and now.minute < 3 and date != last_daily:
+        if now.hour == 0 and now.minute == 0 and date != last_daily:
             bilan = load_bilan()
             send_telegram(format_bilan(bilan, "daily"), ALERT_DESTINATIONS + RECAP_DESTINATIONS)
-            # Reset compteurs quotidiens
             bilan["set1"] = {"won": 0, "lost": 0}
             bilan["set2"] = {"won": 0, "lost": 0}
             bilan["last_reset_daily"] = date
             save_bilan(bilan)
             last_daily = date
-            log.info("📅 Bilan quotidien envoyé et réinitialisé")
+            log.info("📅 Bilan quotidien envoyé")
 
         # Bilan hebdomadaire le dimanche à minuit
-        if now.weekday() == 6 and now.hour == 0 and now.minute < 3 and week != last_weekly:
+        if now.weekday() == 6 and now.hour == 0 and now.minute == 0 and week != last_weekly:
             bilan = load_bilan()
             send_telegram(format_bilan(bilan, "weekly"), ALERT_DESTINATIONS + RECAP_DESTINATIONS)
             bilan["week"] = {"set1": {"won": 0, "lost": 0}, "set2": {"won": 0, "lost": 0}}
             bilan["last_reset_weekly"] = week
             save_bilan(bilan)
             last_weekly = week
-            log.info("📆 Bilan hebdomadaire envoyé et réinitialisé")
+            log.info("📆 Bilan hebdomadaire envoyé")
 
         time.sleep(60)
 
