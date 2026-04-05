@@ -139,6 +139,14 @@ def fetch_1xbet_set_odds(match_id_1xbet: str, is_player1_favorite: bool) -> dict
         log.info(f"1xbet error: {e}")
         return result
 
+def fetch_page(url: str) -> BeautifulSoup | None:
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        return BeautifulSoup(r.text, "html.parser")
+    except Exception as e:
+        log.error(f"Fetch error [{url}]: {e}")
+        return None
 # ─── Scraping score-tennis.com ────────────────────────────────────────────────
 
 def parse_upcoming_matches(competition_key: str) -> list:
