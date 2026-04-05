@@ -123,16 +123,13 @@ def parse_upcoming_matches(competition_key: str) -> list:
     today_str    = datetime.now(tz=timezone.utc).strftime("%d.%m")
     matches      = []
 
-    # Découper la page en blocs par date/heure
-    text   = r.text
-    blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', text)
-
-    log.info(f"Blocs trouvés: {len(blocks)} | today={today_str} | section={section_name}")
+    blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', r.text)
+    log.info(f"Blocs trouvés: {len(blocks)} | today={today_str}")
 
     i = 1
     while i < len(blocks) - 1:
-        header = blocks[i]        # ex: "05.04 14:30"
-        body   = blocks[i + 1]   # contenu du bloc
+        header = blocks[i]
+        body   = blocks[i + 1]
 
         date_m = re.match(r'(\d{2}\.\d{2})\s+(\d{2}:\d{2})', header)
         if not date_m:
@@ -146,12 +143,11 @@ def parse_upcoming_matches(competition_key: str) -> list:
             i += 2
             continue
 
-        # Vérifier compétition
         if section_name and section_name not in body:
             i += 2
             continue
 
-        # Extraire cotes
+        # Cotes
         w1_m = re.search(r'W1[^:]*:\s*([\d.]+)', body)
         w2_m = re.search(r'W2[^:]*:\s*([\d.]+)', body)
         if not w1_m or not w2_m:
@@ -161,11 +157,25 @@ def parse_upcoming_matches(competition_key: str) -> list:
         w1 = float(w1_m.group(1))
         w2 = float(w2_m.group(1))
 
-        # Extraire noms via liens /players/
-        players = re.findall(r'/players/[^"]+">([^<]+)</a>', body)
+        # Noms joueurs — plusieurs patterns possibles
+        # Pattern 1 : <a href="/players/...">Nom</a>
+        players = re.findall(r'href="/players/[^"]+">([^<]+)<', body)
+        # Pattern 2 : class="tag" ou class contenant "player"
         if len(players) < 2:
-            # Fallback: chercher après "score of recent face-to-face"
-            log.info(f"Pas de joueurs dans bloc {match_time}: {body[:300]}")
+            players = re.findall(r'class="[^"]*tag[^"]*"[^>]*>([A-Za-zÀ-ÿ][^<]{3,40})<', body)
+        # Pattern 3 : texte brut après face-to-face — cherche lignes avec noms propres
+        if len(players) < 2:
+            # Extraire tout le texte du bloc et chercher les noms
+            soup_block = BeautifulSoup(body, "html.parser")
+            # Chercher tous les liens
+            all_a = soup_block.find_all("a")
+            for a in all_a:
+                href = a.get("href", "")
+                if "/players/" in href:
+                    players.append(" ".join(a.get_text(strip=True).split()))
+
+        if len(players) < 2:
+            log.info(f"❌ Joueurs non trouvés à {match_time} — extrait: {body[200:500]}")
             i += 2
             continue
 
@@ -173,7 +183,7 @@ def parse_upcoming_matches(competition_key: str) -> list:
         p2 = " ".join(players[1].split())
 
         # H2H
-        h2h_m  = re.search(r'(\d+)\s*:\s*(\d+)\s*\n.*face-to-face', body)
+        h2h_m  = re.search(r'(\d+)\s*:\s*(\d+)[^\d]*face-to-face', body, re.DOTALL)
         h2h_p1 = h2h_p2 = 0
         if h2h_m:
             h2h_p1 = int(h2h_m.group(1))
