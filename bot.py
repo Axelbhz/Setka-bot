@@ -389,7 +389,6 @@ def check_live_and_results():
 # ─── Section B : Récap à heures fixes ────────────────────────────────────────
 
 def build_recap(all_matches: list) -> str | None:
-    """Construit le message récap de tous les matchs filtrés."""
     grouped = {}
 
     for match in all_matches:
@@ -398,9 +397,11 @@ def build_recap(all_matches: list) -> str | None:
             continue
         o1, o2 = odds[0], odds[1]
 
+        # Option 3 : favori requis
         if REQUIRE_FAVORITE and min(o1, o2) > MAX_FAVORITE_ODDS:
             continue
 
+        # Option 1 : filtre fenêtre de cotes
         if not IGNORE_ODDS_FILTER:
             if not (MIN_FAVORITE_ODDS <= min(o1, o2) <= MAX_FAVORITE_ODDS):
                 continue
@@ -418,7 +419,7 @@ def build_recap(all_matches: list) -> str | None:
     msg   = f"📋 <b>MATCHS DU JOUR — {now.strftime('%H:%M')} UTC</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     for label, lines in grouped.items():
         msg += f"\n🏆 <b>{label}</b>\n" + "\n".join(lines) + "\n"
-    msg += f"\n━━━━━━━━━━━━━━━━━━━━\n{total} match(s) avec favori"
+    msg += f"\n━━━━━━━━━━━━━━━━━━━━\n{total} match(s)"
     return msg
 
 def recap_thread():
