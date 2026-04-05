@@ -144,6 +144,8 @@ def parse_upcoming_matches(competition_key: str) -> list:
             continue
 
         if section_name and section_name not in body:
+            log.info(f"=== BLOC BRUT ===\n{body[:1000]}")
+            break  # on arrête après le premier bloc trouvé
             i += 2
             continue
 
