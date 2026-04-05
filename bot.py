@@ -124,7 +124,6 @@ def parse_upcoming_matches(competition_key: str) -> list:
     matches      = []
 
     blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', r.text)
-    log.info(f"Blocs trouvés: {len(blocks)} | today={today_str}")
 
     i = 1
     while i < len(blocks) - 1:
@@ -144,8 +143,6 @@ def parse_upcoming_matches(competition_key: str) -> list:
             continue
 
         if section_name and section_name not in body:
-            log.info(f"=== BLOC BRUT ===\n{body[:1000]}")
-            break  # on arrête après le premier bloc trouvé
             i += 2
             continue
 
@@ -159,30 +156,33 @@ def parse_upcoming_matches(competition_key: str) -> list:
         w1 = float(w1_m.group(1))
         w2 = float(w2_m.group(1))
 
-        # Noms joueurs — plusieurs patterns possibles
-        # Pattern 1 : <a href="/players/...">Nom</a>
-        players = re.findall(r'href="/players/[^"]+">([^<]+)<', body)
-        # Pattern 2 : class="tag" ou class contenant "player"
-        if len(players) < 2:
-            players = re.findall(r'class="[^"]*tag[^"]*"[^>]*>([A-Za-zÀ-ÿ][^<]{3,40})<', body)
-        # Pattern 3 : texte brut après face-to-face — cherche lignes avec noms propres
-        if len(players) < 2:
-            # Extraire tout le texte du bloc et chercher les noms
-            soup_block = BeautifulSoup(body, "html.parser")
-            # Chercher tous les liens
-            all_a = soup_block.find_all("a")
-            for a in all_a:
-                href = a.get("href", "")
-                if "/players/" in href:
-                    players.append(" ".join(a.get_text(strip=True).split()))
+        # Noms depuis l'URL 1xbet : "...320661202-Sergey-Prus-Oleg-Savenkov"
+        # Le format est : ID-Prenom1-Nom1-Prenom2-Nom2
+        url_m = re.search(
+            r'/line/Table-Tennis/[^/]+/\d+-([A-Za-z]+-[A-Za-z]+-[A-Za-z]+-[A-Za-z]+)',
+            body
+        )
+        if not url_m:
+            # Essai avec noms simples (un seul mot chacun)
+            url_m = re.search(
+                r'/line/Table-Tennis/[^/]+/\d+-([A-Za-z]+-[A-Za-z]+)',
+                body
+            )
 
-        if len(players) < 2:
-            log.info(f"❌ Joueurs non trouvés à {match_time} — extrait: {body[200:500]}")
+        if not url_m:
+            log.info(f"❌ URL joueurs non trouvée à {match_time}")
             i += 2
             continue
 
-        p1 = " ".join(players[0].split())
-        p2 = " ".join(players[1].split())
+        # Extraire et séparer les deux joueurs
+        # Format : "Prenom1-Nom1-Prenom2-Nom2" ou "Prenom1-Prenom2"
+        slug = url_m.group(1)  # ex: "Sergey-Prus-Oleg-Savenkov"
+        parts = slug.split("-")
+
+        # On divise en deux moitiés égales
+        mid_idx = len(parts) // 2
+        p1 = " ".join(parts[:mid_idx])
+        p2 = " ".join(parts[mid_idx:])
 
         # H2H
         h2h_m  = re.search(r'(\d+)\s*:\s*(\d+)[^\d]*face-to-face', body, re.DOTALL)
@@ -201,7 +201,7 @@ def parse_upcoming_matches(competition_key: str) -> list:
             "odds":        [w1, w2],
             "h2h":         {"p1_wins": h2h_p1, "p2_wins": h2h_p2, "total": h2h_p1 + h2h_p2},
         })
-        log.info(f"✅ {p1} vs {p2} | {w1}/{w2} | H2H {h2h_p1}:{h2h_p2}")
+        log.info(f"✅ {p1} vs {p2} | W1={w1} W2={w2} | H2H {h2h_p1}:{h2h_p2}")
         i += 2
 
     log.info(f"[{competition_key}] {len(matches)} matchs")
@@ -381,7 +381,7 @@ def send_recap(all_matches: list):
 
         label = COMP_LABELS.get(match["competition"], match["competition"])
         grouped.setdefault(label, []).append(
-            f"  🕐 {match['time']} — {match['player1']} vs {match['player2']} → <b>{fav_name}</b> ({fav_odds})"
+            f"  🕐 {match['time']} — {match['player1']} vs {match['player2']}"
         )
 
     if not grouped:
