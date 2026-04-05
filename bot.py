@@ -189,8 +189,8 @@ def parse_upcoming_matches(competition_key: str) -> list:
             i += 2
             continue
 
-        p1 = " ".join(player_links[0].get_text(strip=True).split())
-        p2 = " ".join(player_links[1].get_text(strip=True).split())
+        p1 = " ".join(player_links[0].get_text().split())
+        p2 = " ".join(player_links[1].get_text().split())
 
         if not p1 or not p2:
             i += 2
