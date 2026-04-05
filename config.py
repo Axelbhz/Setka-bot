@@ -46,7 +46,7 @@ DISABLE_SET2_RECOVERY = False
 # ── Option 3 : EXIGER UN FAVORI CLAIR ──────────────────────────
 # True  (défaut) = ignore les matchs sans favori 
 # False          = analyse tous les matchs même sans favori marqué
-REQUIRE_FAVORITE = True
+REQUIRE_FAVORITE = False
 
 # ── Filtre H2H ──────────────────────────────────────────────────
 MIN_H2H_MATCHES = 1
