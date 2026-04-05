@@ -105,22 +105,31 @@ def send_telegram(message: str, destinations: list):
 
 def fetch_all_today_events() -> dict:
     """Retourne tous les événements du jour groupés par tournament_id."""
-    try:
-        url = "https://api.sofascore.com/api/v1/sport/table-tennis/scheduled-events/today"
-        r = requests.get(url, headers=SOFASCORE_HEADERS, timeout=15)
-        if r.status_code != 200:
-            log.warning(f"Sofascore today: {r.status_code}")
-            return {}
-        events = r.json().get("events", [])
-        grouped = {}
-        for e in events:
-            tid = e.get("tournament", {}).get("uniqueTournament", {}).get("id")
-            if tid:
-                grouped.setdefault(tid, []).append(e)
-        return grouped
-    except Exception as ex:
-        log.error(f"fetch_all_today_events: {ex}")
-        return {}
+    from datetime import date
+    today = date.today().strftime("%Y-%m-%d")
+    
+    urls_to_try = [
+        f"https://www.sofascore.com/api/v1/sport/table-tennis/scheduled-events/{today}",
+        "https://www.sofascore.com/api/v1/sport/table-tennis/events/live",
+    ]
+    
+    for url in urls_to_try:
+        try:
+            r = requests.get(url, headers=SOFASCORE_HEADERS, timeout=15)
+            if r.status_code == 200:
+                events = r.json().get("events", [])
+                grouped = {}
+                for e in events:
+                    tid = e.get("tournament", {}).get("uniqueTournament", {}).get("id")
+                    if tid:
+                        grouped.setdefault(tid, []).append(e)
+                log.info(f"Sofascore OK: {len(events)} événements trouvés")
+                return grouped
+            log.warning(f"Sofascore {url}: {r.status_code}")
+        except Exception as ex:
+            log.error(f"fetch_all_today_events [{url}]: {ex}")
+    
+    return {}
 
 def parse_event(event: dict, competition_key: str) -> dict:
     """Transforme un event Sofascore en dict standard."""
