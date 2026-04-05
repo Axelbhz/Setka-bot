@@ -36,7 +36,7 @@ MAX_FAVORITE_ODDS = 1.70
 # ── Option 1 : IGNORER le filtre de cotes ──────────────────────
 # False (défaut) = cote entre MIN et MAX requise
 # True           = alerte même si hors fenêtre (mode analyse)
-IGNORE_ODDS_FILTER = True
+IGNORE_ODDS_FILTER = False
 
 # ── Option 2 : DÉSACTIVER la récupération sur le 2ème set ──────
 # False (défaut) = alerte set 2 si set 1 perdu
@@ -46,7 +46,7 @@ DISABLE_SET2_RECOVERY = False
 # ── Option 3 : EXIGER UN FAVORI CLAIR ──────────────────────────
 # True  (défaut) = ignore les matchs sans favori 
 # False          = analyse tous les matchs même sans favori marqué
-REQUIRE_FAVORITE = False
+REQUIRE_FAVORITE = True
 
 # ── Filtre H2H ──────────────────────────────────────────────────
 MIN_H2H_MATCHES = 1
