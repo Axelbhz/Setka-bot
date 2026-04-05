@@ -391,16 +391,6 @@ def send_recap(all_matches: list):
     grouped = {}
 
     for match in all_matches:
-        # Filtre heure
-        try:
-            t = datetime.strptime(match["time"], "%H:%M").replace(
-                year=now.year, month=now.month, day=now.day, tzinfo=timezone.utc
-            )
-        except:
-            continue
-        if not (now <= t <= horizon):
-            continue
-
         odds = match.get("odds", [])
         if len(odds) < 2:
             continue
@@ -423,14 +413,14 @@ def send_recap(all_matches: list):
         )
 
     if not grouped:
-        log.info("Récap : aucun match filtré dans les 2h à venir")
+        log.info("Récap : aucun match filtré")
         return
 
     total = sum(len(v) for v in grouped.values())
     msg   = f"📋 <b>MATCHS À VENIR — {now.strftime('%H:%M')} UTC</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     for label, lines in grouped.items():
         msg += f"\n🏆 <b>{label}</b>\n" + "\n".join(lines) + "\n"
-    msg += f"\n━━━━━━━━━━━━━━━━━━━━\n{total} opportunité(s) dans les {RECAP_WINDOW_HOURS}h à venir"
+    msg += f"\n━━━━━━━━━━━━━━━━━━━━\n{total} opportunité(s)"
 
     send_telegram(msg, RECAP_DESTINATIONS)
     log.info(f"📋 Récap envoyé : {total} matchs")
