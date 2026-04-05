@@ -114,110 +114,70 @@ def fetch_page(url: str) -> BeautifulSoup | None:
         return None
 
 def parse_upcoming_matches(competition_key: str) -> list:
-    """
-    Scrape score-tennis.com/up-games/ en utilisant les liens <a href="/players/...">
-    pour extraire les noms des joueurs correctement.
-    """
-    soup = fetch_page(f"{BASE_URL}/up-games/")
-    if not soup:
+    r = requests.get(f"{BASE_URL}/up-games/", headers=HEADERS, timeout=15)
+    if r.status_code != 200:
+        log.info(f"up-games: {r.status_code}")
         return []
 
     section_name = COMP_SECTION_NAMES.get(competition_key, "")
     today_str    = datetime.now(tz=timezone.utc).strftime("%d.%m")
     matches      = []
 
-    # La page est structurée en blocs de texte brut
-    # On parse le HTML directement pour trouver les liens joueurs
-    # Chaque bloc match contient :
-    #   - date/heure dans un <div> ou texte
-    #   - nom compétition
-    #   - W1/W2
-    #   - lien joueur 1 <a href="/players/...">
-    #   - score H2H "X : Y"
-    #   - "score of recent face-to-face matches"
-    #   - lien joueur 2 <a href="/players/...">
+    # Découper la page en blocs par date/heure
+    text   = r.text
+    blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', text)
 
-    body_text = soup.get_text(separator="\n")
-    all_links = soup.find_all("a", href=re.compile(r"/players/"))
+    log.info(f"Blocs trouvés: {len(blocks)} | today={today_str} | section={section_name}")
 
-    # On va parcourir les liens joueurs par paires
-    # Chaque match = 2 liens joueurs consécutifs
-    i = 0
-    while i < len(all_links) - 1:
-        a1 = all_links[i]
-        a2 = all_links[i + 1]
+    i = 1
+    while i < len(blocks) - 1:
+        header = blocks[i]        # ex: "05.04 14:30"
+        body   = blocks[i + 1]   # contenu du bloc
 
-        p1 = " ".join(a1.get_text(strip=True).split())
-        p2 = " ".join(a2.get_text(strip=True).split())
-
-        # Vérifier qu'on est bien sur une paire (pas deux matchs différents)
-        # En cherchant "score of recent face-to-face" entre les deux liens
-        between = ""
-        node = a1.next_sibling
-        count = 0
-        while node and count < 20:
-            if hasattr(node, "get_text"):
-                between += node.get_text()
-            elif isinstance(node, str):
-                between += node
-            if node == a2:
-                break
-            node = node.next_sibling
-            count += 1
-
-        if "face-to-face" not in between and "score of recent" not in between:
-            i += 1
-            continue
-
-        # H2H score ex: "5 : 0" ou "1 : 4"
-        h2h_m = re.search(r'(\d+)\s*:\s*(\d+)', between)
-        h2h_p1 = h2h_p2 = 0
-        if h2h_m:
-            h2h_p1 = int(h2h_m.group(1))
-            h2h_p2 = int(h2h_m.group(2))
-
-        # Remonter pour trouver date/heure et compétition
-        # On cherche dans le texte précédant le lien a1
-        prev_text = ""
-        node = a1.previous_sibling
-        count = 0
-        while node and count < 50:
-            if hasattr(node, "get_text"):
-                prev_text = node.get_text() + "\n" + prev_text
-            elif isinstance(node, str):
-                prev_text = node + "\n" + prev_text
-            count += 1
-            node = node.previous_sibling
-
-        # Chercher date/heure
-        time_m = re.search(r'(\d{2}\.\d{2})\s+(\d{2}:\d{2})', prev_text)
-        if not time_m:
+        date_m = re.match(r'(\d{2}\.\d{2})\s+(\d{2}:\d{2})', header)
+        if not date_m:
             i += 2
             continue
 
-        match_date = time_m.group(1)
-        match_time = time_m.group(2)
+        match_date = date_m.group(1)
+        match_time = date_m.group(2)
 
-        # Vérifier que c'est aujourd'hui
         if match_date != today_str:
             i += 2
             continue
 
         # Vérifier compétition
-        if section_name and section_name.lower() not in prev_text.lower():
-            log.info(f"❌ Compétition non trouvée dans: {prev_text[-200:]}")
+        if section_name and section_name not in body:
             i += 2
             continue
 
-        # Cotes W1/W2
-        w1_m = re.search(r'W1:\s*([\d.]+)', prev_text)
-        w2_m = re.search(r'W2:\s*([\d.]+)', prev_text)
+        # Extraire cotes
+        w1_m = re.search(r'W1[^:]*:\s*([\d.]+)', body)
+        w2_m = re.search(r'W2[^:]*:\s*([\d.]+)', body)
         if not w1_m or not w2_m:
             i += 2
             continue
 
         w1 = float(w1_m.group(1))
         w2 = float(w2_m.group(1))
+
+        # Extraire noms via liens /players/
+        players = re.findall(r'/players/[^"]+">([^<]+)</a>', body)
+        if len(players) < 2:
+            # Fallback: chercher après "score of recent face-to-face"
+            log.info(f"Pas de joueurs dans bloc {match_time}: {body[:300]}")
+            i += 2
+            continue
+
+        p1 = " ".join(players[0].split())
+        p2 = " ".join(players[1].split())
+
+        # H2H
+        h2h_m  = re.search(r'(\d+)\s*:\s*(\d+)\s*\n.*face-to-face', body)
+        h2h_p1 = h2h_p2 = 0
+        if h2h_m:
+            h2h_p1 = int(h2h_m.group(1))
+            h2h_p2 = int(h2h_m.group(2))
 
         mid = f"{p1}_{p2}_{match_date}_{match_time}"
         matches.append({
@@ -229,11 +189,10 @@ def parse_upcoming_matches(competition_key: str) -> list:
             "odds":        [w1, w2],
             "h2h":         {"p1_wins": h2h_p1, "p2_wins": h2h_p2, "total": h2h_p1 + h2h_p2},
         })
-        log.info(f"✅ Match: {p1} vs {p2} | W1={w1} W2={w2} | H2H {h2h_p1}:{h2h_p2} | {match_time}")
-
+        log.info(f"✅ {p1} vs {p2} | {w1}/{w2} | H2H {h2h_p1}:{h2h_p2}")
         i += 2
 
-    log.info(f"[{competition_key}] {len(matches)} matchs à venir")
+    log.info(f"[{competition_key}] {len(matches)} matchs")
     return matches
 
 # ─── Logique d'analyse (Axel) ─────────────────────────────────────────────────
