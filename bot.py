@@ -283,58 +283,44 @@ def process_alert(match: dict):
 
     odds = match.get("odds", [])
     if len(odds) < 2:
+        log.info(f"❌ {match['player1']} vs {match['player2']} — pas de cotes")
         return
 
     o1, o2 = odds[0], odds[1]
-    log.info(f"🔍 {match['player1']} ({o1}) vs {match['player2']} ({o2})")
+    log.info(f"🔍 {match['player1']} ({o1}) vs {match['player2']} ({o2}) | H2H: {match.get('h2h')}")
 
-    # Option 3 : favori requis
     if REQUIRE_FAVORITE and min(o1, o2) > MAX_FAVORITE_ODDS:
-        log.info(f"❌ Pas de favori clair")
+        log.info(f"❌ Pas de favori clair: min={min(o1,o2)} > {MAX_FAVORITE_ODDS}")
         return
 
-    # Analyse structurelle
     verdict = analyze_match_logic(match)
+    log.info(f"📊 Verdict: {verdict}")
     if not verdict:
-        log.info(f"❌ Pas de signal structurel")
         return
 
-    # Joueur désigné
-    is_p1_fav = verdict["bet_on"] == "player1"
-    if is_p1_fav:
+    if verdict["bet_on"] == "player1":
         fav_name, und_name = match["player1"], match["player2"]
-        match_odds_fav     = o1
+        fav_odds = o1
     else:
         fav_name, und_name = match["player2"], match["player1"]
-        match_odds_fav     = o2
+        fav_odds = o2
 
-    # Option 1 : filtre fenêtre de cotes match
-    odds_in_window = MIN_FAVORITE_ODDS <= match_odds_fav <= MAX_FAVORITE_ODDS
+    odds_in_window = MIN_FAVORITE_ODDS <= fav_odds <= MAX_FAVORITE_ODDS
+    log.info(f"💰 Cote {fav_name}: {fav_odds} | in_window={odds_in_window}")
     if not IGNORE_ODDS_FILTER and not odds_in_window:
-        log.info(f"❌ Cote match {match_odds_fav} hors fenêtre")
-        return
-
-    # Récupérer cotes set 1 et set 2 sur 1xbet
-    set_odds = fetch_1xbet_set_odds(match.get("xbet_id"), is_p1_fav)
-
-    if not set_odds["set1"]:
-        log.info(f"❌ Cote set 1 non disponible sur 1xbet — pas d'alerte")
+        log.info(f"❌ Cote hors fenêtre [{MIN_FAVORITE_ODDS}-{MAX_FAVORITE_ODDS}]")
         return
 
     h2h = match.get("h2h", {})
     analysis = {
         "match_id":       mid,
-        "xbet_id":        match.get("xbet_id"),
         "player1":        match["player1"],
         "player2":        match["player2"],
         "favorite":       fav_name,
         "underdog":       und_name,
-        "is_p1_fav":      is_p1_fav,
-        "set1_odds":      set_odds["set1"],
-        "set2_odds":      set_odds["set2"],
-        "match_odds":     match_odds_fav,
+        "fav_odds":       fav_odds,
         "confidence":     verdict["confidence"],
-        "h2h_wins":       h2h.get("p1_wins") if is_p1_fav else h2h.get("p2_wins"),
+        "h2h_wins":       h2h.get("p1_wins") if verdict["bet_on"] == "player1" else h2h.get("p2_wins"),
         "h2h_total":      h2h.get("total", 0),
         "time":           match["time"],
         "competition":    match["competition"],
@@ -344,7 +330,7 @@ def process_alert(match: dict):
     send_telegram(format_set1_alert(analysis), ALERT_DESTINATIONS)
     alerted_set1.add(mid)
     live_tracking[mid] = analysis
-    log.info(f"✅ Alerte set1: {fav_name} | cote set1={set_odds['set1']} set2={set_odds['set2']}")
+    log.info(f"✅ Alerte set1: {fav_name} vs {und_name}")
 
 # ─── Surveillance live + résultats ───────────────────────────────────────────
 
@@ -355,83 +341,69 @@ def check_live_and_results():
     bilan   = load_bilan()
     changed = False
 
-    # Résultats finaux via score-tennis.com/games/
-    try:
-        soup = requests.get(f"{BASE_URL}/games/", headers=HEADERS, timeout=15)
-        if soup.status_code == 200:
-            content = BeautifulSoup(soup.text, "html.parser").get_text()
-            for mid, a in list(live_tracking.items()):
-                if mid in results_seen:
+    # Résultats finaux
+    soup = fetch_page(f"{BASE_URL}/games/")
+    if soup:
+        for mid, a in list(live_tracking.items()):
+            if mid in results_seen:
+                continue
+            fav_first = a["favorite"].split()[0].lower()
+            content   = soup.get_text()
+            if fav_first in content.lower():
+                idx     = content.lower().find(fav_first)
+                snippet = content[idx:idx+200]
+                score_m = re.search(r'(\d+)\s*:\s*(\d+)', snippet)
+                if score_m:
+                    s1, s2       = int(score_m.group(1)), int(score_m.group(2))
+                    fav_is_p1    = a["favorite"] == a["player1"]
+                    fav_won_set1 = (s1 > s2) if fav_is_p1 else (s2 > s1)
+
+                    if mid in alerted_set1 and mid not in alerted_set2:
+                        key = "won" if fav_won_set1 else "lost"
+                        bilan["set1"][key] += 1
+                        bilan["week"]["set1"][key] += 1
+                        results_seen.add(mid)
+                        changed = True
+                        log.info(f"📊 Bilan set1 mis à jour: {fav_won_set1} pour {a['favorite']}")
+
+                    if mid in alerted_set2:
+                        key = "won" if fav_won_set1 else "lost"
+                        bilan["set2"][key] += 1
+                        bilan["week"]["set2"][key] += 1
+                        results_seen.add(mid)
+                        changed = True
+                        log.info(f"📊 Bilan set2 mis à jour: {fav_won_set1} pour {a['favorite']}")
+
+    # Live : set 1 perdu ?
+    if not DISABLE_SET2_RECOVERY:
+        soup_live = fetch_page(f"{BASE_URL}/live_v2/")
+        if soup_live:
+            content_live = soup_live.get_text()
+            log.info(f"Live page longueur: {len(content_live)}")
+            log.info(f"Live tracking actif: {list(live_tracking.keys())}")
+
+            for mid, a in live_tracking.items():
+                if mid in alerted_set2:
                     continue
                 fav_first = a["favorite"].split()[0].lower()
-                if fav_first in content.lower():
-                    idx     = content.lower().find(fav_first)
-                    snippet = content[idx:idx+200]
-                    score_m = re.search(r'(\d+)\s*:\s*(\d+)', snippet)
-                    if score_m:
-                        s1, s2       = int(score_m.group(1)), int(score_m.group(2))
-                        fav_is_p1    = a["is_p1_fav"]
-                        fav_won_set1 = (s1 > s2) if fav_is_p1 else (s2 > s1)
-
-                        if mid in alerted_set1 and mid not in alerted_set2:
-                            key = "won" if fav_won_set1 else "lost"
-                            bilan["set1"][key]          += 1
-                            bilan["week"]["set1"][key]  += 1
-                            results_seen.add(mid)
-                            changed = True
-                            log.info(f"📊 Bilan set1 {key}: {a['favorite']}")
-
-                        if mid in alerted_set2:
-                            key = "won" if fav_won_set1 else "lost"
-                            bilan["set2"][key]          += 1
-                            bilan["week"]["set2"][key]  += 1
-                            results_seen.add(mid)
-                            changed = True
-                            log.info(f"📊 Bilan set2 {key}: {a['favorite']}")
-    except Exception as e:
-        log.error(f"check results error: {e}")
-
-    # Live : set 1 perdu → alerte set 2
-    if not DISABLE_SET2_RECOVERY:
-        try:
-            r_live = requests.get(f"{BASE_URL}/live_v2/", headers=HEADERS, timeout=15)
-            if r_live.status_code == 200:
-                content_live = BeautifulSoup(r_live.text, "html.parser").get_text()
-
-                for mid, a in list(live_tracking.items()):
-                    if mid in alerted_set2:
-                        continue
-
-                    fav_first = a["favorite"].split()[0].lower()
-                    if fav_first not in content_live.lower():
-                        continue
-
-                    idx      = content_live.lower().find(fav_first)
-                    snippet  = content_live[idx:idx+200]
-                    set_m    = re.search(r'(\d+)\s*:\s*(\d+)', snippet)
-                    if not set_m:
-                        continue
-
-                    ss1, ss2      = int(set_m.group(1)), int(set_m.group(2))
-                    fav_is_p1     = a["is_p1_fav"]
-                    fav_lost_set1 = (ss1 < ss2) if fav_is_p1 else (ss2 < ss1)
-                    set1_finished = (ss1 + ss2) >= 1
-
-                    if set1_finished and fav_lost_set1:
-                        # Récupérer cote set 2 fraîche si pas encore disponible
-                        set2_odds = a.get("set2_odds")
-                        if not set2_odds:
-                            fresh = fetch_1xbet_set_odds(a.get("xbet_id"), a["is_p1_fav"])
-                            set2_odds = fresh.get("set2")
-                            if set2_odds:
-                                a["set2_odds"] = set2_odds
-
-                        send_telegram(format_set2_alert(a), ALERT_DESTINATIONS)
-                        alerted_set2.add(mid)
-                        log.info(f"⚠️ Alerte set2: {a['favorite']} | cote={set2_odds}")
-
-        except Exception as e:
-            log.error(f"check live error: {e}")
+                log.info(f"Cherche '{fav_first}' dans live...")
+                if fav_first in content_live.lower():
+                    idx     = content_live.lower().find(fav_first)
+                    snippet = content_live[idx:idx+150]
+                    log.info(f"Trouvé dans live: {snippet[:100]}")
+                    set_m   = re.search(r'(\d+)\s*:\s*(\d+)', snippet)
+                    if set_m:
+                        ss1, ss2      = int(set_m.group(1)), int(set_m.group(2))
+                        fav_is_p1     = a["favorite"] == a["player1"]
+                        fav_lost_set1 = (ss1 < ss2) if fav_is_p1 else (ss2 < ss1)
+                        total_sets    = ss1 + ss2
+                        log.info(f"Score sets: {ss1}:{ss2} | fav_lost={fav_lost_set1} | total={total_sets}")
+                        if fav_lost_set1 and total_sets == 1:
+                            send_telegram(format_set2_alert(a), ALERT_DESTINATIONS)
+                            alerted_set2.add(mid)
+                            log.info(f"⚠️ Alerte set2 envoyée: {a['favorite']}")
+                else:
+                    log.info(f"'{fav_first}' non trouvé dans la page live")
 
     if changed:
         save_bilan(bilan)
@@ -526,7 +498,7 @@ def bilan_thread():
 def format_set1_alert(a: dict) -> str:
     comp      = COMP_LABELS.get(a["competition"], a["competition"])
     h2h_str   = f"{a['h2h_wins']}/{a['h2h_total']}" if a.get("h2h_total") else "N/A"
-    odds_note = "\n⚠️ <i>Mode analyse : cote match hors fenêtre normale</i>" if (IGNORE_ODDS_FILTER and not a["odds_in_window"]) else ""
+    odds_note = "\n⚠️ <i>Mode analyse : cote hors fenêtre normale</i>" if (IGNORE_ODDS_FILTER and not a["odds_in_window"]) else ""
     return (
         f"🏓 <b>{comp}</b>\n━━━━━━━━━━━━━━━━━━━━\n"
         f"⚔️  {a['player1']} vs {a['player2']}\n"
@@ -537,7 +509,7 @@ def format_set1_alert(a: dict) -> str:
         f"• Confiance : {a['confidence']}%\n"
         f"{odds_note}\n"
         f"✅ <b>PARI : {SET1_ALERT_LABEL} — {a['favorite']}</b>\n"
-        f"💰 Cote set 1 : <b>{a['set1_odds']}</b>"
+        f"💰 Cote set 1 : vérifier sur 1xbet"
     )
 
 def format_set2_alert(a: dict) -> str:
