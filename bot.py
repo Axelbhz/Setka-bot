@@ -616,7 +616,7 @@ def run():
     )
 
     threading.Thread(target=bilan_thread, daemon=True).start()
-    last_recap = datetime.now(tz=timezone.utc)
+    last_recap = datetime.now(tz=timezone.utc) - timedelta(hours=RECAP_INTERVAL_HOURS)
 
     while True:
         try:
