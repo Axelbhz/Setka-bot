@@ -68,12 +68,12 @@ SOFASCORE_HEADERS = {
 }
 
 SOFASCORE_TOURNAMENT_IDS = {
-    "setka_cup_cz":      2388525,
-    "setka_cup_ukraine": 2388526,
-    "setka_cup_intl":    1733171,
-    "liga_pro_russia":   2388527,
-    "tt_star_series":    2388528,
-    "pro_league_cz":     2095165,
+    "setka_cup_cz":      15006,   # Setka Cup Czech Republic
+    "setka_cup_ukraine": 15004,   # Setka Cup Men (Ukraine)
+    "setka_cup_intl":    15004,   # Setka Cup International
+    "liga_pro_russia":   15003,   # Liga Pro Russia
+    "tt_star_series":    15008,   # TT Star Series
+    "pro_league_cz":     15005,   # TT Cup / Pro League CZ
 }
 
 COMP_LABELS = {
