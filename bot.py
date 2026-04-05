@@ -300,28 +300,19 @@ def parse_recent_form(player_url: str) -> dict:
 # ─── Logique d'analyse (Axel) ─────────────────────────────────────────────────
 
 def analyze_match_logic(match: dict) -> dict | None:
-    """
-    Analyse structurelle indépendante des filtres de cotes.
-    Utilise le H2H déjà dans le match + forme récente si disponible.
-    """
-    h2h    = match.get("h2h", {"p1_wins": 0, "p2_wins": 0, "total": 0})
+    h2h      = match.get("h2h", {"p1_wins": 0, "p2_wins": 0, "total": 0})
     score_p1 = 50
 
-    # ── PILIER A : Ascendant psychologique (H2H) ────────────────
     if h2h["total"] >= 1:
         win_rate_p1  = h2h["p1_wins"] / h2h["total"]
-        score_p1    += int((win_rate_p1 - 0.5) * 60)  # -30 à +30
-
-    # ── PILIERS B/C/D/E : Forme (simplifiée sans URL joueur) ────
-    # score-tennis.com affiche le H2H directement sur la page up-games
-    # La forme détaillée nécessite de visiter la page joueur (coûteux)
-    # On l'active uniquement si le H2H est insuffisant
+        score_p1    += int((win_rate_p1 - 0.5) * 60)
 
     score_p1 = max(0, min(score_p1, 100))
+    log.info(f"📊 Score structurel P1: {score_p1}")
 
-    if score_p1 >= 75:
+    if score_p1 >= 60:
         return {"bet_on": "player1", "name": match["player1"], "confidence": score_p1}
-    elif score_p1 <= 25:
+    elif score_p1 <= 40:
         return {"bet_on": "player2", "name": match["player2"], "confidence": 100 - score_p1}
 
     return None
@@ -466,38 +457,23 @@ def check_live_and_results():
 
 def send_recap(all_matches: list):
     now     = datetime.now(tz=timezone.utc)
-    horizon = now + timedelta(hours=RECAP_WINDOW_HOURS)
     grouped = {}
 
     for match in all_matches:
-        # Convertir l'heure du match
-        try:
-            t = datetime.strptime(match["time"], "%H:%M").replace(
-                year=now.year, month=now.month, day=now.day, tzinfo=timezone.utc
-            )
-        except:
-            continue
-
-        if not (now <= t <= horizon):
-            continue
-
         odds = match.get("odds", [])
         if len(odds) < 2:
             continue
 
         o1, o2 = odds[0], odds[1]
 
-        # Filtre favori
         if REQUIRE_FAVORITE and min(o1, o2) > MAX_FAVORITE_ODDS:
             continue
 
-        # Identifier le favori
         if o1 <= o2:
             fav_name, fav_odds = match["player1"], o1
         else:
             fav_name, fav_odds = match["player2"], o2
 
-        # Filtre cotes si actif
         if not IGNORE_ODDS_FILTER and not (MIN_FAVORITE_ODDS <= fav_odds <= MAX_FAVORITE_ODDS):
             continue
 
@@ -507,14 +483,14 @@ def send_recap(all_matches: list):
         )
 
     if not grouped:
-        log.info("Récap : aucun match filtré dans les 2h à venir")
+        log.info("Récap : aucun match filtré")
         return
 
     total = sum(len(v) for v in grouped.values())
     msg   = f"📋 <b>MATCHS À VENIR — {now.strftime('%H:%M')} UTC</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     for label, lines in grouped.items():
         msg += f"\n🏆 <b>{label}</b>\n" + "\n".join(lines) + "\n"
-    msg += f"\n━━━━━━━━━━━━━━━━━━━━\n{total} opportunité(s) dans les {RECAP_WINDOW_HOURS}h à venir"
+    msg += f"\n━━━━━━━━━━━━━━━━━━━━\n{total} opportunité(s)"
 
     send_telegram(msg, RECAP_DESTINATIONS)
     log.info(f"📋 Récap envoyé : {total} matchs")
