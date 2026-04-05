@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 Setka Cup Betting Bot
-Source : score-tennis.com (scraping gratuit)
-─────────────────────────────────────────────
+Source : score-tennis.com
+─────────────────────────
 Section A : Alertes paris (toutes les 3 min)
 Section B : Récap toutes les 2h
-Bilan      : Quotidien et hebdomadaire à minuit
+Bilan      : Quotidien + hebdomadaire à minuit
 """
 
 import re
@@ -57,8 +57,8 @@ def save_bilan(b: dict):
 # ─── Mémoire session ──────────────────────────────────────────────────────────
 alerted_set1  = set()
 alerted_set2  = set()
-live_tracking = {}  # {match_id: analysis_dict}
-results_seen  = set()  # matchs dont on a déjà enregistré le résultat
+live_tracking = {}
+results_seen  = set()
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -68,7 +68,6 @@ HEADERS = {
 
 BASE_URL = "https://score-tennis.com"
 
-# Mapping compétition → nom sur score-tennis.com
 COMP_SECTION_NAMES = {
     "setka_cup_cz":      "Setka Cup. Czech Republic",
     "setka_cup_ukraine": "Setka Cup",
@@ -114,188 +113,127 @@ def fetch_page(url: str) -> BeautifulSoup | None:
         log.error(f"Fetch error [{url}]: {e}")
         return None
 
-def parse_odds(text: str) -> float:
-    """Extrait une cote depuis un texte comme 'W1: 1.35'"""
-    try:
-        m = re.search(r'[\d]+\.[\d]+', text)
-        return float(m.group()) if m else 0.0
-    except:
-        return 0.0
-
 def parse_upcoming_matches(competition_key: str) -> list:
     """
-    Scrape score-tennis.com/up-games/ et retourne les matchs à venir
-    pour la compétition demandée.
+    Scrape score-tennis.com/up-games/ en utilisant les liens <a href="/players/...">
+    pour extraire les noms des joueurs correctement.
     """
     soup = fetch_page(f"{BASE_URL}/up-games/")
     if not soup:
         return []
 
     section_name = COMP_SECTION_NAMES.get(competition_key, "")
-    matches = []
-    now_utc = datetime.now(tz=timezone.utc)
-    today_str = now_utc.strftime("%d.%m")
+    today_str    = datetime.now(tz=timezone.utc).strftime("%d.%m")
+    matches      = []
 
-    # La page liste les matchs sous forme de blocs texte
-    # On cherche les blocs qui contiennent le nom de la compétition
-    content = soup.get_text(separator="\n")
-    lines   = content.split("\n")
-    lines   = [l.strip() for l in lines if l.strip()]
+    # La page est structurée en blocs de texte brut
+    # On parse le HTML directement pour trouver les liens joueurs
+    # Chaque bloc match contient :
+    #   - date/heure dans un <div> ou texte
+    #   - nom compétition
+    #   - W1/W2
+    #   - lien joueur 1 <a href="/players/...">
+    #   - score H2H "X : Y"
+    #   - "score of recent face-to-face matches"
+    #   - lien joueur 2 <a href="/players/...">
 
+    body_text = soup.get_text(separator="\n")
+    all_links = soup.find_all("a", href=re.compile(r"/players/"))
+
+    # On va parcourir les liens joueurs par paires
+    # Chaque match = 2 liens joueurs consécutifs
     i = 0
-    while i < len(lines):
-        line = lines[i]
+    while i < len(all_links) - 1:
+        a1 = all_links[i]
+        a2 = all_links[i + 1]
 
-        # Cherche une ligne de date/heure comme "05.04 08:25"
-        time_match = re.match(r'(\d{2}\.\d{2})\s+(\d{2}:\d{2})', line)
-        if time_match:
-            match_date = time_match.group(1)  # "05.04"
-            match_time = time_match.group(2)  # "08:25"
+        p1 = " ".join(a1.get_text(strip=True).split())
+        p2 = " ".join(a2.get_text(strip=True).split())
 
-            # Vérifie que c'est aujourd'hui
-            if match_date != today_str:
-                i += 1
-                continue
+        # Vérifier qu'on est bien sur une paire (pas deux matchs différents)
+        # En cherchant "score of recent face-to-face" entre les deux liens
+        between = ""
+        node = a1.next_sibling
+        count = 0
+        while node and count < 20:
+            if hasattr(node, "get_text"):
+                between += node.get_text()
+            elif isinstance(node, str):
+                between += node
+            if node == a2:
+                break
+            node = node.next_sibling
+            count += 1
 
-            # Cherche le nom de la compétition dans les lignes suivantes
-            comp_found = False
-            w1 = w2 = 0.0
-            p1 = p2 = ""
-            h2h_score = ""
+        if "face-to-face" not in between and "score of recent" not in between:
+            i += 1
+            continue
 
-            j = i + 1
-            while j < min(i + 30, len(lines)):
-                l = lines[j]
+        # H2H score ex: "5 : 0" ou "1 : 4"
+        h2h_m = re.search(r'(\d+)\s*:\s*(\d+)', between)
+        h2h_p1 = h2h_p2 = 0
+        if h2h_m:
+            h2h_p1 = int(h2h_m.group(1))
+            h2h_p2 = int(h2h_m.group(2))
 
-                if section_name and section_name.lower() in l.lower():
-                    comp_found = True
+        # Remonter pour trouver date/heure et compétition
+        # On cherche dans le texte précédant le lien a1
+        prev_text = ""
+        node = a1.previous_sibling
+        count = 0
+        while node and count < 50:
+            if hasattr(node, "get_text"):
+                prev_text = node.get_text() + "\n" + prev_text
+            elif isinstance(node, str):
+                prev_text = node + "\n" + prev_text
+            count += 1
+            node = node.previous_sibling
 
-                if "W1:" in l:
-                    w1 = parse_odds(l)
-                if "W2:" in l:
-                    w2 = parse_odds(l)
+        # Chercher date/heure
+        time_m = re.search(r'(\d{2}\.\d{2})\s+(\d{2}:\d{2})', prev_text)
+        if not time_m:
+            i += 2
+            continue
 
-                # H2H score comme "5 : 0" ou "1 : 4"
-                h2h_m = re.match(r'^(\d+)\s*:\s*(\d+)$', l)
-                if h2h_m and not h2h_score:
-                    h2h_score = l
+        match_date = time_m.group(1)
+        match_time = time_m.group(2)
 
-                # Noms joueurs — lignes après les cotes qui ne sont pas des nombres
-                # Les noms apparaissent après les cotes W1/W2
-                if w1 > 0 and w2 > 0 and not p1:
-                    # Ligne joueur 1 : nom propre (pas de chiffres dominants)
-                    if re.search(r'[A-Za-zÀ-ÿ]{3,}', l) and not re.match(r'^[\d\.\s:]+$', l) and "W" not in l and "Total" not in l and "Handi" not in l and "Ind." not in l:
-                        p1 = l.strip()
-                elif p1 and not p2:
-                    if re.search(r'[A-Za-zÀ-ÿ]{3,}', l) and not re.match(r'^[\d\.\s:]+$', l) and "W" not in l and "Total" not in l and "Handi" not in l and "Ind." not in l and "score" not in l.lower():
-                        p2 = l.strip()
+        # Vérifier que c'est aujourd'hui
+        if match_date != today_str:
+            i += 2
+            continue
 
-                # Fin du bloc (nouvelle date/heure)
-                if re.match(r'\d{2}\.\d{2}\s+\d{2}:\d{2}', l) and j > i + 1:
-                    break
+        # Vérifier compétition
+        if section_name and section_name.lower() not in prev_text.lower():
+            i += 2
+            continue
 
-                j += 1
+        # Cotes W1/W2
+        w1_m = re.search(r'W1:\s*([\d.]+)', prev_text)
+        w2_m = re.search(r'W2:\s*([\d.]+)', prev_text)
+        if not w1_m or not w2_m:
+            i += 2
+            continue
 
-            if comp_found and p1 and p2 and w1 > 0 and w2 > 0:
-                # H2H depuis le score affiché "X : Y"
-                h2h_p1 = h2h_p2 = 0
-                if h2h_score:
-                    parts = h2h_score.split(":")
-                    if len(parts) == 2:
-                        try:
-                            h2h_p1 = int(parts[0].strip())
-                            h2h_p2 = int(parts[1].strip())
-                        except:
-                            pass
+        w1 = float(w1_m.group(1))
+        w2 = float(w2_m.group(1))
 
-                mid = f"{p1}_{p2}_{match_date}_{match_time}"
-                matches.append({
-                    "id":          mid,
-                    "player1":     p1,
-                    "player2":     p2,
-                    "time":        match_time,
-                    "competition": competition_key,
-                    "odds":        [w1, w2],
-                    "h2h":         {"p1_wins": h2h_p1, "p2_wins": h2h_p2, "total": h2h_p1 + h2h_p2},
-                })
-                log.debug(f"Match trouvé: {p1} vs {p2} | {w1}/{w2} | H2H {h2h_p1}:{h2h_p2}")
+        mid = f"{p1}_{p2}_{match_date}_{match_time}"
+        matches.append({
+            "id":          mid,
+            "player1":     p1,
+            "player2":     p2,
+            "time":        match_time,
+            "competition": competition_key,
+            "odds":        [w1, w2],
+            "h2h":         {"p1_wins": h2h_p1, "p2_wins": h2h_p2, "total": h2h_p1 + h2h_p2},
+        })
+        log.info(f"✅ Match: {p1} vs {p2} | W1={w1} W2={w2} | H2H {h2h_p1}:{h2h_p2} | {match_time}")
 
-        i += 1
+        i += 2
 
     log.info(f"[{competition_key}] {len(matches)} matchs à venir")
     return matches
-
-def parse_recent_form(player_url: str) -> dict:
-    """
-    Scrape la page d'un joueur pour récupérer sa forme récente.
-    Retourne wins, losses, last_match_won, won_after_losing_set, wins_excluding_last.
-    """
-    empty = {
-        "wins": 0, "losses": 0, "last5": "?????",
-        "last_match_won": False, "won_after_losing_set": False,
-        "wins_excluding_last": 0, "matches_today": 0,
-    }
-    if not player_url:
-        return empty
-
-    soup = fetch_page(player_url)
-    if not soup:
-        return empty
-
-    try:
-        results = []
-        today   = date.today().strftime("%d.%m")
-        matches_today = 0
-        won_after_losing_set = False
-
-        # Cherche les lignes de résultats dans le tableau
-        rows = soup.select("table tr")
-        for row in rows[:8]:
-            cols = row.find_all("td")
-            if len(cols) < 3:
-                continue
-
-            date_col   = cols[0].get_text(strip=True) if cols else ""
-            score_col  = cols[1].get_text(strip=True) if len(cols) > 1 else ""
-            sets_text  = " ".join(c.get_text(strip=True) for c in cols[2:])
-
-            if not re.match(r'\d{2}\.\d{2}', date_col):
-                continue
-
-            if date_col.startswith(today):
-                matches_today += 1
-
-            # Score global ex: "3:1" ou "1:3"
-            score_m = re.match(r'^(\d+)\s*:\s*(\d+)$', score_col)
-            if not score_m:
-                continue
-
-            s1, s2 = int(score_m.group(1)), int(score_m.group(2))
-            won    = s1 > s2
-            results.append("V" if won else "D")
-
-            # Résilience : a-t-il remporté en ayant perdu un set ?
-            if won:
-                sets_lost = sets_text.count("loss") or (s2 >= 1)
-                if sets_lost:
-                    won_after_losing_set = True
-
-        last5  = results[:5]
-        wins   = last5.count("V")
-        losses = last5.count("D")
-
-        return {
-            "wins":                wins,
-            "losses":              losses,
-            "last5":               "".join(last5),
-            "last_match_won":      results[0] == "V" if results else False,
-            "won_after_losing_set": won_after_losing_set,
-            "wins_excluding_last": last5[1:].count("V") if len(last5) > 1 else 0,
-            "matches_today":       matches_today,
-        }
-    except Exception as e:
-        log.debug(f"Form parse error [{player_url}]: {e}")
-        return empty
 
 # ─── Logique d'analyse (Axel) ─────────────────────────────────────────────────
 
@@ -303,12 +241,13 @@ def analyze_match_logic(match: dict) -> dict | None:
     h2h      = match.get("h2h", {"p1_wins": 0, "p2_wins": 0, "total": 0})
     score_p1 = 50
 
+    # PILIER A : H2H
     if h2h["total"] >= 1:
         win_rate_p1  = h2h["p1_wins"] / h2h["total"]
         score_p1    += int((win_rate_p1 - 0.5) * 60)
 
     score_p1 = max(0, min(score_p1, 100))
-    log.info(f"📊 Score structurel P1: {score_p1}")
+    log.info(f"📊 {match['player1']} vs {match['player2']} | Score structurel P1: {score_p1}")
 
     if score_p1 >= 60:
         return {"bet_on": "player1", "name": match["player1"], "confidence": score_p1}
@@ -317,7 +256,7 @@ def analyze_match_logic(match: dict) -> dict | None:
 
     return None
 
-# ─── Traitement alerte paris (Section A) ──────────────────────────────────────
+# ─── Traitement alerte paris ──────────────────────────────────────────────────
 
 def process_alert(match: dict):
     mid = match["id"]
@@ -332,15 +271,18 @@ def process_alert(match: dict):
     o1, o2 = odds[0], odds[1]
     log.info(f"🔍 {match['player1']} ({o1}) vs {match['player2']} ({o2}) | H2H: {match.get('h2h')}")
 
+    # Option 3 : favori requis
     if REQUIRE_FAVORITE and min(o1, o2) > MAX_FAVORITE_ODDS:
-        log.info(f"❌ Pas de favori clair: min cote={min(o1,o2)} > {MAX_FAVORITE_ODDS}")
+        log.info(f"❌ Pas de favori clair: min={min(o1,o2)} > {MAX_FAVORITE_ODDS}")
         return
 
+    # Analyse structurelle
     verdict = analyze_match_logic(match)
     log.info(f"📊 Verdict: {verdict}")
     if not verdict:
         return
 
+    # Cote du joueur désigné
     if verdict["bet_on"] == "player1":
         fav_name, und_name = match["player1"], match["player2"]
         fav_odds = o1
@@ -348,10 +290,11 @@ def process_alert(match: dict):
         fav_name, und_name = match["player2"], match["player1"]
         fav_odds = o2
 
+    # Option 1 : filtre fenêtre de cotes
     odds_in_window = MIN_FAVORITE_ODDS <= fav_odds <= MAX_FAVORITE_ODDS
-    log.info(f"💰 Cote favori {fav_name}: {fav_odds} | in_window={odds_in_window}")
+    log.info(f"💰 Cote {fav_name}: {fav_odds} | in_window={odds_in_window}")
     if not IGNORE_ODDS_FILTER and not odds_in_window:
-        log.info(f"❌ Cote hors fenêtre")
+        log.info(f"❌ Cote hors fenêtre [{MIN_FAVORITE_ODDS}-{MAX_FAVORITE_ODDS}]")
         return
 
     h2h = match.get("h2h", {})
@@ -375,75 +318,62 @@ def process_alert(match: dict):
     live_tracking[mid] = analysis
     log.info(f"✅ Alerte set1: {fav_name} vs {und_name} | cote {fav_odds}")
 
-# ─── Surveillance live (Section A) ────────────────────────────────────────────
+# ─── Surveillance live + résultats ───────────────────────────────────────────
 
 def check_live_and_results():
-    """
-    Scrape score-tennis.com/live_v2/ pour détecter set 1 perdu
-    et score-tennis.com/games/ pour enregistrer les résultats finaux.
-    """
     if not live_tracking:
         return
 
-    bilan = load_bilan()
+    bilan   = load_bilan()
     changed = False
 
-    # ── Résultats finaux ─────────────────────────────────────────
+    # Résultats finaux
     soup = fetch_page(f"{BASE_URL}/games/")
     if soup:
-        content = soup.get_text(separator="\n")
         for mid, a in list(live_tracking.items()):
             if mid in results_seen:
                 continue
-            fav = a["favorite"].split()[0].lower()  # premier mot du nom
-            if fav in content.lower():
-                # Chercher le score final dans le contexte
-                idx = content.lower().find(fav)
+            fav_first = a["favorite"].split()[0].lower()
+            content   = soup.get_text()
+            if fav_first in content.lower():
+                idx     = content.lower().find(fav_first)
                 snippet = content[idx:idx+200]
                 score_m = re.search(r'(\d+)\s*:\s*(\d+)', snippet)
                 if score_m:
-                    s1, s2 = int(score_m.group(1)), int(score_m.group(2))
-                    # Déduire si le favori a gagné (approximation)
-                    fav_is_p1 = a["favorite"] == a["player1"]
+                    s1, s2       = int(score_m.group(1)), int(score_m.group(2))
+                    fav_is_p1    = a["favorite"] == a["player1"]
                     fav_won_set1 = (s1 > s2) if fav_is_p1 else (s2 > s1)
 
                     if mid in alerted_set1 and mid not in alerted_set2:
-                        if fav_won_set1:
-                            bilan["set1"]["won"] += 1
-                            bilan["week"]["set1"]["won"] += 1
-                        else:
-                            bilan["set1"]["lost"] += 1
-                            bilan["week"]["set1"]["lost"] += 1
+                        key = "won" if fav_won_set1 else "lost"
+                        bilan["set1"][key] += 1
+                        bilan["week"]["set1"][key] += 1
                         results_seen.add(mid)
                         changed = True
 
                     if mid in alerted_set2:
-                        if fav_won_set1:
-                            bilan["set2"]["won"] += 1
-                            bilan["week"]["set2"]["won"] += 1
-                        else:
-                            bilan["set2"]["lost"] += 1
-                            bilan["week"]["set2"]["lost"] += 1
+                        key = "won" if fav_won_set1 else "lost"
+                        bilan["set2"][key] += 1
+                        bilan["week"]["set2"][key] += 1
                         results_seen.add(mid)
                         changed = True
 
-    # ── Live : set 1 perdu ? ─────────────────────────────────────
+    # Live : set 1 perdu ?
     if not DISABLE_SET2_RECOVERY:
         soup_live = fetch_page(f"{BASE_URL}/live_v2/")
         if soup_live:
-            content_live = soup_live.get_text(separator="\n")
+            content_live = soup_live.get_text()
             for mid, a in live_tracking.items():
                 if mid in alerted_set2:
                     continue
-                fav = a["favorite"].split()[0].lower()
-                if fav in content_live.lower():
-                    idx = content_live.lower().find(fav)
+                fav_first = a["favorite"].split()[0].lower()
+                if fav_first in content_live.lower():
+                    idx     = content_live.lower().find(fav_first)
                     snippet = content_live[idx:idx+150]
-                    # Cherche un score de sets comme "0 : 1" indiquant set 1 perdu
-                    set_score = re.search(r'(\d+)\s*:\s*(\d+)', snippet)
-                    if set_score:
-                        ss1, ss2 = int(set_score.group(1)), int(set_score.group(2))
-                        fav_is_p1 = a["favorite"] == a["player1"]
+                    set_m   = re.search(r'(\d+)\s*:\s*(\d+)', snippet)
+                    if set_m:
+                        ss1, ss2     = int(set_m.group(1)), int(set_m.group(2))
+                        fav_is_p1    = a["favorite"] == a["player1"]
                         fav_lost_set1 = (ss1 < ss2) if fav_is_p1 else (ss2 < ss1)
                         if fav_lost_set1 and (ss1 + ss2) == 1:
                             send_telegram(format_set2_alert(a), ALERT_DESTINATIONS)
@@ -453,17 +383,27 @@ def check_live_and_results():
     if changed:
         save_bilan(bilan)
 
-# ─── Section B : Récap toutes les 2h ─────────────────────────────────────────
+# ─── Section B : Récap ───────────────────────────────────────────────────────
 
 def send_recap(all_matches: list):
     now     = datetime.now(tz=timezone.utc)
+    horizon = now + timedelta(hours=RECAP_WINDOW_HOURS)
     grouped = {}
 
     for match in all_matches:
+        # Filtre heure
+        try:
+            t = datetime.strptime(match["time"], "%H:%M").replace(
+                year=now.year, month=now.month, day=now.day, tzinfo=timezone.utc
+            )
+        except:
+            continue
+        if not (now <= t <= horizon):
+            continue
+
         odds = match.get("odds", [])
         if len(odds) < 2:
             continue
-
         o1, o2 = odds[0], odds[1]
 
         if REQUIRE_FAVORITE and min(o1, o2) > MAX_FAVORITE_ODDS:
@@ -483,14 +423,14 @@ def send_recap(all_matches: list):
         )
 
     if not grouped:
-        log.info("Récap : aucun match filtré")
+        log.info("Récap : aucun match filtré dans les 2h à venir")
         return
 
     total = sum(len(v) for v in grouped.values())
     msg   = f"📋 <b>MATCHS À VENIR — {now.strftime('%H:%M')} UTC</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     for label, lines in grouped.items():
         msg += f"\n🏆 <b>{label}</b>\n" + "\n".join(lines) + "\n"
-    msg += f"\n━━━━━━━━━━━━━━━━━━━━\n{total} opportunité(s)"
+    msg += f"\n━━━━━━━━━━━━━━━━━━━━\n{total} opportunité(s) dans les {RECAP_WINDOW_HOURS}h à venir"
 
     send_telegram(msg, RECAP_DESTINATIONS)
     log.info(f"📋 Récap envoyé : {total} matchs")
@@ -518,9 +458,8 @@ def format_bilan(b: dict, period: str) -> str:
 def bilan_thread():
     last_daily  = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
     last_weekly = datetime.now(tz=timezone.utc).strftime("%Y-W%W")
-
     while True:
-        now  = datetime.now(tz=timezone.utc)
+        now      = datetime.now(tz=timezone.utc)
         date_str = now.strftime("%Y-%m-%d")
         week_str = now.strftime("%Y-W%W")
 
@@ -581,8 +520,6 @@ def run():
         f"• Filtre cotes [{MIN_FAVORITE_ODDS}-{MAX_FAVORITE_ODDS}] : {'❌ désactivé' if IGNORE_ODDS_FILTER else '✅'}",
         f"• Récupération set 2 : {'❌ désactivée' if DISABLE_SET2_RECOVERY else '✅'}",
         f"• Compétitions : {', '.join(COMPETITIONS)}",
-        f"• Alertes toutes les {CHECK_INTERVAL_MINUTES} min",
-        f"• Récap toutes les {RECAP_INTERVAL_HOURS}h",
         f"• Source : score-tennis.com",
     ]
     send_telegram(
@@ -596,19 +533,14 @@ def run():
     while True:
         try:
             all_matches = []
-
             for comp in COMPETITIONS:
                 matches = parse_upcoming_matches(comp)
                 all_matches.extend(matches)
-
-                # Section A : alertes paris
                 for match in matches:
                     process_alert(match)
 
-            # Section A : check live + résultats
             check_live_and_results()
 
-            # Section B : récap toutes les 2h
             now = datetime.now(tz=timezone.utc)
             if (now - last_recap).total_seconds() >= RECAP_INTERVAL_HOURS * 3600:
                 send_recap(all_matches)
