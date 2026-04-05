@@ -205,6 +205,7 @@ def parse_upcoming_matches(competition_key: str) -> list:
 
         # Vérifier compétition
         if section_name and section_name.lower() not in prev_text.lower():
+            log.info(f"❌ Compétition non trouvée dans: {prev_text[-200:]}")
             i += 2
             continue
 
