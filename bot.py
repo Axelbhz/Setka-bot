@@ -116,60 +116,28 @@ def fetch_1xbet_set_odds(match_id_1xbet: str, is_player1_favorite: bool) -> dict
     if not match_id_1xbet:
         return result
 
-    endpoints = [
-        f"https://1xbet.com/LineFeed/GetGameZip?id={match_id_1xbet}&lng=en&isSubGames=true&GroupEvents=true&countevents=250&sl=1",
-        f"https://1xbet.com/LineFeed/get_GameZip?id={match_id_1xbet}&lng=en&isSubGames=true&GroupEvents=true&countevents=250",
-        f"https://1xbet.com/LineFeed/GetGameZip?id={match_id_1xbet}&lng=en&isSubGames=1&GroupEvents=1",
-    ]
-
+    url = f"https://1xbet.com/LineFeed/GetGameZip?id={match_id_1xbet}&lng=en&isSubGames=true&GroupEvents=true&countevents=250&sl=1"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://1xbet.com/en/line/table-tennis/",
         "Origin": "https://1xbet.com",
     }
 
-    for url in endpoints:
-        try:
-            r = requests.get(url, headers=headers, timeout=10)
-            log.info(f"1xbet endpoint {url[-50:]} → {r.status_code}")
-            if r.status_code != 200:
-                continue
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        log.info(f"1xbet status: {r.status_code}")
+        if r.status_code != 200:
+            return result
 
-            data = r.json()
-            # Log la structure pour déboguer
-            log.info(f"1xbet réponse keys: {list(data.keys())[:5]}")
+        # Logger le JSON brut complet pour analyser la structure
+        raw = r.text[:3000]
+        log.info(f"1xbet JSON brut:\n{raw}")
+        return result
 
-            groups = data.get("Value", {}).get("GE", []) or data.get("GE", [])
-            for group in groups:
-                gn = group.get("GN", "").lower()
-                log.info(f"Groupe: {gn}")
-                for keyword_set, set_num in [
-                    (["1st set", "set 1", "1 set", "first set", "set winner 1"], "set1"),
-                    (["2nd set", "set 2", "2 set", "second set", "set winner 2"], "set2"),
-                ]:
-                    if any(k in gn for k in keyword_set):
-                        for event in group.get("E", []):
-                            en = event.get("EN", "").lower()
-                            cote = float(event.get("C", 0) or 0)
-                            if cote <= 1:
-                                continue
-                            if is_player1_favorite and any(x in en for x in ["w1", "1", "home"]):
-                                result[set_num] = cote
-                            elif not is_player1_favorite and any(x in en for x in ["w2", "2", "away"]):
-                                result[set_num] = cote
-
-            if result["set1"] or result["set2"]:
-                log.info(f"✅ 1xbet cotes → Set1: {result['set1']} | Set2: {result['set2']}")
-                return result
-
-        except Exception as e:
-            log.info(f"1xbet endpoint error: {e}")
-            continue
-
-    log.info(f"❌ Aucun endpoint 1xbet n'a retourné les cotes set")
-    return result
+    except Exception as e:
+        log.info(f"1xbet error: {e}")
+        return result
 
 # ─── Scraping score-tennis.com ────────────────────────────────────────────────
 
