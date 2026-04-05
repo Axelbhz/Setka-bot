@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Setka Cup Betting Bot
-Source : score-tennis.com + 1xbet API (cotes set)
-─────────────────────────────────────────────────
+Source : score-tennis.com
+─────────────────────────
 Section A : Alertes paris (toutes les 3 min)
 Section B : Récap toutes les 2h
 Bilan      : Quotidien + hebdomadaire à minuit
@@ -13,7 +13,7 @@ import time
 import json
 import logging
 import threading
-from datetime import datetime, timezone, timedelta, date
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import requests
@@ -66,13 +66,6 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-XBET_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json",
-    "Referer": "https://1xbet.com/",
-    "Origin": "https://1xbet.com",
-}
-
 BASE_URL = "https://score-tennis.com"
 
 COMP_SECTION_NAMES = {
@@ -109,35 +102,7 @@ def send_telegram(message: str, destinations: list):
         except Exception as e:
             log.error(f"Telegram exception [{dest}]: {e}")
 
-# ─── 1xbet : cotes set 1 et set 2 ────────────────────────────────────────────
-
-def fetch_1xbet_set_odds(match_id_1xbet: str, is_player1_favorite: bool) -> dict:
-    result = {"set1": None, "set2": None}
-    if not match_id_1xbet:
-        return result
-
-    url = f"https://1xbet.com/LineFeed/GetGameZip?id={match_id_1xbet}&lng=en&isSubGames=true&GroupEvents=true&countevents=250&sl=1"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Referer": "https://1xbet.com/en/line/table-tennis/",
-        "Origin": "https://1xbet.com",
-    }
-
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        log.info(f"1xbet status: {r.status_code}")
-        if r.status_code not in (200, 203):
-            return result
-
-        # Logger le JSON brut complet pour analyser la structure
-        raw = r.text[:3000]
-        log.info(f"1xbet JSON brut:\n{raw}")
-        return result
-
-    except Exception as e:
-        log.info(f"1xbet error: {e}")
-        return result
+# ─── Fetch page ───────────────────────────────────────────────────────────────
 
 def fetch_page(url: str) -> BeautifulSoup | None:
     try:
@@ -147,13 +112,10 @@ def fetch_page(url: str) -> BeautifulSoup | None:
     except Exception as e:
         log.error(f"Fetch error [{url}]: {e}")
         return None
-# ─── Scraping score-tennis.com ────────────────────────────────────────────────
+
+# ─── Scraping matchs à venir ──────────────────────────────────────────────────
 
 def parse_upcoming_matches(competition_key: str) -> list:
-    """
-    Scrape score-tennis.com/up-games/
-    Extrait noms depuis l'URL 1xbet présente dans le HTML.
-    """
     try:
         r = requests.get(f"{BASE_URL}/up-games/", headers=HEADERS, timeout=15)
         if r.status_code != 200:
@@ -168,7 +130,6 @@ def parse_upcoming_matches(competition_key: str) -> list:
     matches      = []
 
     blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', r.text)
-    log.info(f"[{competition_key}] Blocs: {len(blocks)} | today={today_str}")
 
     i = 1
     while i < len(blocks) - 1:
@@ -191,7 +152,7 @@ def parse_upcoming_matches(competition_key: str) -> list:
             i += 2
             continue
 
-        # Cotes match W1/W2 (pour filtre favori)
+        # Cotes
         w1_m = re.search(r'W1[^:]*:\s*([\d.]+)', body)
         w2_m = re.search(r'W2[^:]*:\s*([\d.]+)', body)
         if not w1_m or not w2_m:
@@ -201,73 +162,52 @@ def parse_upcoming_matches(competition_key: str) -> list:
         w1 = float(w1_m.group(1))
         w2 = float(w2_m.group(1))
 
-        # ID et noms depuis URL 1xbet
-        # Format: /line/Table-Tennis/LEAGUE_ID/MATCH_ID-Prenom1-Nom1-Prenom2-Nom2
-        url_m = re.search(
-            r'/line/Table-Tennis/[^/]+/(\d+)-([A-Za-z]+(?:-[A-Za-z]+)*)',
-            body
-        )
+        # ID 1xbet
+        id_m     = re.search(r'/line/Table-Tennis/[^/]+/(\d+)-', body)
+        xbet_id  = id_m.group(1) if id_m else None
+
+        # Noms depuis URL 1xbet
+        url_m = re.search(r'/line/Table-Tennis/[^/]+/\d+-([A-Za-z]+(?:-[A-Za-z]+)+)', body)
         if not url_m:
-            log.info(f"❌ URL 1xbet non trouvée à {match_time}")
             i += 2
             continue
 
-        xbet_id = url_m.group(1)
-        slug    = url_m.group(2)   # ex: "Sergey-Prus-Oleg-Savenkov"
-        parts   = slug.split("-")
+        slug  = url_m.group(1)
+        parts = slug.split("-")
+        mid_idx = len(parts) // 2
+        p1 = " ".join(parts[:mid_idx])
+        p2 = " ".join(parts[mid_idx:])
 
-        # Diviser le slug en deux joueurs
-        # On cherche le point de séparation optimal
-        # Heuristique : chaque joueur a 1 ou 2 mots
-        if len(parts) == 2:
-            p1, p2 = parts[0], parts[1]
-        elif len(parts) == 3:
-            # Prénom Nom vs Prénom — on prend 2+1
-            p1 = " ".join(parts[:2])
-            p2 = parts[2]
-        elif len(parts) == 4:
-            p1 = " ".join(parts[:2])
-            p2 = " ".join(parts[2:])
-        elif len(parts) == 5:
-            # Prénom Nom vs Prénom Nom Suffixe — 2+3 ou 3+2
-            p1 = " ".join(parts[:2])
-            p2 = " ".join(parts[2:])
-        else:
-            mid_idx = len(parts) // 2
-            p1 = " ".join(parts[:mid_idx])
-            p2 = " ".join(parts[mid_idx:])
-
-        # H2H depuis "X : Y score of recent face-to-face"
+        # H2H
         h2h_m  = re.search(r'(\d+)\s*:\s*(\d+)[^\d]*face-to-face', body, re.DOTALL)
         h2h_p1 = h2h_p2 = 0
         if h2h_m:
             h2h_p1 = int(h2h_m.group(1))
             h2h_p2 = int(h2h_m.group(2))
 
-        mid = f"{xbet_id}_{match_date}_{match_time}"
+        mid = f"{p1}_{p2}_{match_date}_{match_time}"
         matches.append({
             "id":          mid,
-            "xbet_id":     xbet_id,
             "player1":     p1,
             "player2":     p2,
             "time":        match_time,
             "competition": competition_key,
             "odds":        [w1, w2],
             "h2h":         {"p1_wins": h2h_p1, "p2_wins": h2h_p2, "total": h2h_p1 + h2h_p2},
+            "xbet_id":     xbet_id,
         })
-        log.info(f"✅ {p1} vs {p2} | W1={w1} W2={w2} | H2H {h2h_p1}:{h2h_p2} | xbet_id={xbet_id}")
+        log.info(f"✅ {p1} vs {p2} | W1={w1} W2={w2} | H2H {h2h_p1}:{h2h_p2}")
         i += 2
 
-    log.info(f"[{competition_key}] {len(matches)} matchs à venir")
+    log.info(f"[{competition_key}] {len(matches)} matchs")
     return matches
 
-# ─── Logique d'analyse (Axel) ─────────────────────────────────────────────────
+# ─── Logique d'analyse ────────────────────────────────────────────────────────
 
 def analyze_match_logic(match: dict) -> dict | None:
     h2h      = match.get("h2h", {"p1_wins": 0, "p2_wins": 0, "total": 0})
     score_p1 = 50
 
-    # PILIER A : H2H
     if h2h["total"] >= 1:
         win_rate_p1  = h2h["p1_wins"] / h2h["total"]
         score_p1    += int((win_rate_p1 - 0.5) * 60)
@@ -282,7 +222,7 @@ def analyze_match_logic(match: dict) -> dict | None:
 
     return None
 
-# ─── Traitement alerte paris (Section A) ──────────────────────────────────────
+# ─── Traitement alerte paris ──────────────────────────────────────────────────
 
 def process_alert(match: dict):
     mid = match["id"]
@@ -352,11 +292,11 @@ def check_live_and_results():
     # Résultats finaux
     soup = fetch_page(f"{BASE_URL}/games/")
     if soup:
+        content = soup.get_text()
         for mid, a in list(live_tracking.items()):
             if mid in results_seen:
                 continue
             fav_first = a["favorite"].split()[0].lower()
-            content   = soup.get_text()
             if fav_first in content.lower():
                 idx     = content.lower().find(fav_first)
                 snippet = content[idx:idx+200]
@@ -364,62 +304,60 @@ def check_live_and_results():
                 if score_m:
                     s1, s2       = int(score_m.group(1)), int(score_m.group(2))
                     fav_is_p1    = a["favorite"] == a["player1"]
-                    fav_won_set1 = (s1 > s2) if fav_is_p1 else (s2 > s1)
+                    fav_won      = (s1 > s2) if fav_is_p1 else (s2 > s1)
 
                     if mid in alerted_set1 and mid not in alerted_set2:
-                        key = "won" if fav_won_set1 else "lost"
+                        key = "won" if fav_won else "lost"
                         bilan["set1"][key] += 1
                         bilan["week"]["set1"][key] += 1
                         results_seen.add(mid)
                         changed = True
-                        log.info(f"📊 Bilan set1 mis à jour: {fav_won_set1} pour {a['favorite']}")
+                        log.info(f"📊 Bilan set1: {key} pour {a['favorite']}")
 
-                    if mid in alerted_set2:
-                        key = "won" if fav_won_set1 else "lost"
+                    elif mid in alerted_set2:
+                        key = "won" if fav_won else "lost"
                         bilan["set2"][key] += 1
                         bilan["week"]["set2"][key] += 1
                         results_seen.add(mid)
                         changed = True
-                        log.info(f"📊 Bilan set2 mis à jour: {fav_won_set1} pour {a['favorite']}")
+                        log.info(f"📊 Bilan set2: {key} pour {a['favorite']}")
 
-    # Live : set 1 perdu ?
+    # Live : set 1 perdu → alerte set 2
     if not DISABLE_SET2_RECOVERY:
         soup_live = fetch_page(f"{BASE_URL}/live_v2/")
         if soup_live:
             content_live = soup_live.get_text()
-            log.info(f"Live page longueur: {len(content_live)}")
-            log.info(f"Live tracking actif: {list(live_tracking.keys())}")
+            log.info(f"Live page: {len(content_live)} chars | tracking: {len(live_tracking)} matchs")
 
-            for mid, a in live_tracking.items():
+            for mid, a in list(live_tracking.items()):
                 if mid in alerted_set2:
                     continue
                 fav_first = a["favorite"].split()[0].lower()
                 log.info(f"Cherche '{fav_first}' dans live...")
+
                 if fav_first in content_live.lower():
                     idx     = content_live.lower().find(fav_first)
-                    snippet = content_live[idx:idx+150]
-                    log.info(f"Trouvé dans live: {snippet[:100]}")
+                    snippet = content_live[idx:idx+200]
+                    log.info(f"Trouvé: {snippet[:100]}")
                     set_m   = re.search(r'(\d+)\s*:\s*(\d+)', snippet)
                     if set_m:
                         ss1, ss2      = int(set_m.group(1)), int(set_m.group(2))
                         fav_is_p1     = a["favorite"] == a["player1"]
                         fav_lost_set1 = (ss1 < ss2) if fav_is_p1 else (ss2 < ss1)
-                        total_sets    = ss1 + ss2
-                        log.info(f"Score sets: {ss1}:{ss2} | fav_lost={fav_lost_set1} | total={total_sets}")
-                        if fav_lost_set1 and total_sets == 1:
+                        log.info(f"Score sets: {ss1}:{ss2} | fav_lost={fav_lost_set1}")
+                        if fav_lost_set1 and (ss1 + ss2) == 1:
                             send_telegram(format_set2_alert(a), ALERT_DESTINATIONS)
                             alerted_set2.add(mid)
-                            log.info(f"⚠️ Alerte set2 envoyée: {a['favorite']}")
+                            log.info(f"⚠️ Alerte set2: {a['favorite']}")
                 else:
-                    log.info(f"'{fav_first}' non trouvé dans la page live")
+                    log.info(f"'{fav_first}' non trouvé dans live")
 
     if changed:
         save_bilan(bilan)
 
-# ─── Section B : Récap toutes les 2h ─────────────────────────────────────────
+# ─── Section B : Récap ───────────────────────────────────────────────────────
 
 def send_recap(all_matches: list):
-    now     = datetime.now(tz=timezone.utc)
     grouped = {}
 
     for match in all_matches:
@@ -432,9 +370,12 @@ def send_recap(all_matches: list):
             continue
 
         if o1 <= o2:
-            fav_name = match["player1"]
+            fav_name, fav_odds = match["player1"], o1
         else:
-            fav_name = match["player2"]
+            fav_name, fav_odds = match["player2"], o2
+
+        if not IGNORE_ODDS_FILTER and not (MIN_FAVORITE_ODDS <= fav_odds <= MAX_FAVORITE_ODDS):
+            continue
 
         label = COMP_LABELS.get(match["competition"], match["competition"])
         grouped.setdefault(label, []).append(
@@ -445,6 +386,7 @@ def send_recap(all_matches: list):
         log.info("Récap : aucun match filtré")
         return
 
+    now   = datetime.now(tz=timezone.utc)
     total = sum(len(v) for v in grouped.values())
     msg   = f"📋 <b>MATCHS À VENIR — {now.strftime('%H:%M')} UTC</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     for label, lines in grouped.items():
@@ -521,13 +463,12 @@ def format_set1_alert(a: dict) -> str:
     )
 
 def format_set2_alert(a: dict) -> str:
-    comp      = COMP_LABELS.get(a["competition"], a["competition"])
-    set2_cote = f"<b>{a['set2_odds']}</b>" if a.get("set2_odds") else "vérifier sur 1xbet"
+    comp = COMP_LABELS.get(a["competition"], a["competition"])
     return (
         f"⚠️ <b>SET 1 PERDU — {comp}</b>\n━━━━━━━━━━━━━━━━━━━━\n"
         f"⚔️  {a['player1']} vs {a['player2']}\n\n"
         f"🔄 <b>OPTION : {SET2_ALERT_LABEL} — {a['favorite']}</b>\n"
-        f"💰 Cote set 2 : {set2_cote}\n\n"
+        f"💰 Cote set 2 : vérifier sur 1xbet\n\n"
         f"⚡ <i>Si perd encore → on laisse</i>"
     )
 
@@ -540,8 +481,7 @@ def run():
         f"• Filtre cotes [{MIN_FAVORITE_ODDS}-{MAX_FAVORITE_ODDS}] : {'❌ désactivé' if IGNORE_ODDS_FILTER else '✅'}",
         f"• Récupération set 2 : {'❌ désactivée' if DISABLE_SET2_RECOVERY else '✅'}",
         f"• Compétitions : {', '.join(COMPETITIONS)}",
-        f"• Source scores : score-tennis.com",
-        f"• Source cotes sets : 1xbet",
+        f"• Source : score-tennis.com",
     ]
     send_telegram(
         "🤖 <b>Bot Setka Cup démarré</b>\n━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(opts),
