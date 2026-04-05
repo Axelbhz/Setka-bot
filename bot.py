@@ -127,7 +127,7 @@ def fetch_1xbet_set_odds(match_id_1xbet: str, is_player1_favorite: bool) -> dict
     try:
         r = requests.get(url, headers=headers, timeout=10)
         log.info(f"1xbet status: {r.status_code}")
-        if r.status_code != 200:
+        if r.status_code not in (200, 203):
             return result
 
         # Logger le JSON brut complet pour analyser la structure
