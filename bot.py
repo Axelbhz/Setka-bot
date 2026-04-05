@@ -335,22 +335,21 @@ def process_alert(match: dict):
 
     odds = match.get("odds", [])
     if len(odds) < 2:
+        log.info(f"❌ {match['player1']} vs {match['player2']} — pas de cotes")
         return
 
     o1, o2 = odds[0], odds[1]
+    log.info(f"🔍 {match['player1']} ({o1}) vs {match['player2']} ({o2}) | H2H: {match.get('h2h')}")
 
-    # ── Option 3 : match avec favori requis ─────────────────────
     if REQUIRE_FAVORITE and min(o1, o2) > MAX_FAVORITE_ODDS:
-        log.debug(f"Pas de favori clair: {match['player1']} ({o1}) vs {match['player2']} ({o2})")
+        log.info(f"❌ Pas de favori clair: min cote={min(o1,o2)} > {MAX_FAVORITE_ODDS}")
         return
 
-    # ── Analyse structurelle ─────────────────────────────────────
     verdict = analyze_match_logic(match)
+    log.info(f"📊 Verdict: {verdict}")
     if not verdict:
-        log.debug(f"Pas de signal structurel: {match['player1']} vs {match['player2']}")
         return
 
-    # Cote du joueur désigné
     if verdict["bet_on"] == "player1":
         fav_name, und_name = match["player1"], match["player2"]
         fav_odds = o1
@@ -358,10 +357,10 @@ def process_alert(match: dict):
         fav_name, und_name = match["player2"], match["player1"]
         fav_odds = o2
 
-    # ── Option 1 : filtre fenêtre de cotes ──────────────────────
     odds_in_window = MIN_FAVORITE_ODDS <= fav_odds <= MAX_FAVORITE_ODDS
+    log.info(f"💰 Cote favori {fav_name}: {fav_odds} | in_window={odds_in_window}")
     if not IGNORE_ODDS_FILTER and not odds_in_window:
-        log.debug(f"Cote {fav_odds} hors fenêtre pour {fav_name}")
+        log.info(f"❌ Cote hors fenêtre")
         return
 
     h2h = match.get("h2h", {})
