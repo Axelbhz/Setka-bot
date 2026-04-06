@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Setka Cup Betting Bot - Source: score-tennis.com
-Scan toutes les minutes. Analyse H2H global + H2H set 1.
-Propose WIN 1er SET ou WIN MATCH selon l'analyse.
+Signaux : H2H + Set1 dernier H2H + Forme + Fatigue
 """
 
 import re
@@ -20,8 +19,6 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     ALERT_DESTINATIONS,
     COMPETITIONS, MIN_FAVORITE_ODDS, MAX_FAVORITE_ODDS,
-    MIN_H2H_MATCHES, MIN_WIN_RATE,
-    SET1_ALERT_LABEL,
     IGNORE_ODDS_FILTER, REQUIRE_FAVORITE,
 )
 
@@ -32,7 +29,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-CHECK_INTERVAL_SECONDS = 60  # scan toutes les minutes
+CHECK_INTERVAL_SECONDS = 60
 
 BILAN_FILE = Path("bilan.json")
 
@@ -43,20 +40,17 @@ def load_bilan() -> dict:
         except:
             pass
     return {
-        "set1": {"won": 0, "lost": 0},
+        "set1":  {"won": 0, "lost": 0},
         "match": {"won": 0, "lost": 0},
-        "week": {
-            "set1":  {"won": 0, "lost": 0},
-            "match": {"won": 0, "lost": 0},
-        },
+        "week":  {"set1": {"won": 0, "lost": 0}, "match": {"won": 0, "lost": 0}},
     }
 
 def save_bilan(b: dict):
     BILAN_FILE.write_text(json.dumps(b, indent=2))
 
-alerted   = set()   # match_ids déjà alertés
-tracking  = {}      # {mid: analysis_dict}
-seen      = set()   # résultats déjà enregistrés
+alerted  = set()
+tracking = {}
+seen     = set()
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -128,7 +122,6 @@ def parse_upcoming_matches(competition_key: str) -> list:
     today_str    = datetime.now(tz=timezone.utc).strftime("%d.%m")
     matches      = []
 
-    # Découper en blocs par date/heure
     raw_html    = r.text
     text_blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', raw_html)
 
@@ -166,18 +159,11 @@ def parse_upcoming_matches(competition_key: str) -> list:
         w1 = float(w1_m.group(1))
         w2 = float(w2_m.group(1))
 
-        # Noms depuis liens /players/ dans ce bloc uniquement
+        # Noms depuis liens /players/
         player_links = block_soup.find_all(
             "a", href=re.compile(r"score-tennis\.com/players/|^/players/")
         )
-
-        if len(player_links) < 2:
-            i += 2
-            continue
-
-        # Vérification : les deux liens doivent être dans le même bloc
-        # et avoir "face-to-face" entre eux dans le texte
-        if "face-to-face" not in block_text:
+        if len(player_links) < 2 or "face-to-face" not in block_text:
             i += 2
             continue
 
@@ -195,24 +181,37 @@ def parse_upcoming_matches(competition_key: str) -> list:
             h2h_p1 = int(h2h_m.group(1))
             h2h_p2 = int(h2h_m.group(2))
 
-        # URL de la page H2H détaillée (pour analyse set 1)
-        h2h_url = None
-        stats_link = block_soup.find("a", href=re.compile(r"score-tennis\.com/stats/|^/stats/"))
-        if stats_link:
-            href = stats_link.get("href", "")
-            h2h_url = href if href.startswith("http") else f"{BASE_URL}{href}"
+        # URLs joueurs pour forme + fatigue
+        p1_url = player_links[0].get("href", "")
+        p2_url = player_links[1].get("href", "")
+        if not p1_url.startswith("http"):
+            p1_url = f"{BASE_URL}{p1_url}"
+        if not p2_url.startswith("http"):
+            p2_url = f"{BASE_URL}{p2_url}"
+
+        # URL page du match H2H (pour set 1 dernier H2H)
+        # Elle apparaît dans les lignes du tableau historique
+        match_links = block_soup.find_all("a", href=re.compile(r"/games/"))
+        h2h_match_url = None
+        for ml in match_links:
+            href = ml.get("href", "")
+            if href and p1.split()[0].lower() in href.lower():
+                h2h_match_url = href if href.startswith("http") else f"{BASE_URL}{href}"
+                break
 
         mid = f"{p1}_{p2}_{match_date}_{match_time}"
         matches.append({
-            "id":          mid,
-            "player1":     p1,
-            "player2":     p2,
-            "time":        match_time,
-            "date":        match_date,
-            "competition": competition_key,
-            "odds":        [w1, w2],
-            "h2h":         {"p1_wins": h2h_p1, "p2_wins": h2h_p2, "total": h2h_p1 + h2h_p2},
-            "h2h_url":     h2h_url,
+            "id":            mid,
+            "player1":       p1,
+            "player2":       p2,
+            "time":          match_time,
+            "date":          match_date,
+            "competition":   competition_key,
+            "odds":          [w1, w2],
+            "h2h":           {"p1_wins": h2h_p1, "p2_wins": h2h_p2, "total": h2h_p1 + h2h_p2},
+            "p1_url":        p1_url,
+            "p2_url":        p2_url,
+            "h2h_match_url": h2h_match_url,
         })
         log.info(f"✅ {p1} vs {p2} | W1={w1} W2={w2} | H2H {h2h_p1}:{h2h_p2}")
         i += 2
@@ -220,109 +219,177 @@ def parse_upcoming_matches(competition_key: str) -> list:
     log.info(f"[{competition_key}] {len(matches)} matchs")
     return matches
 
-# ─── Analyse set 1 depuis page H2H ───────────────────────────────────────────
+# ─── Données joueur : forme + fatigue ────────────────────────────────────────
 
-def analyze_set1_from_h2h(h2h_url: str, fav_is_p1: bool) -> dict:
+def get_player_data(player_url: str, today_str: str) -> dict:
     """
-    Scrape la page H2H détaillée pour calculer le taux de victoire
-    du favori au set 1 spécifiquement.
-    Retourne {"set1_wins": int, "set1_total": int, "set1_rate": float}
+    Scrape la page joueur pour extraire :
+    - Forme : V/D sur les matchs visibles
+    - Matchs joués aujourd'hui
     """
-    empty = {"set1_wins": 0, "set1_total": 0, "set1_rate": 0.0}
-    if not h2h_url:
+    empty = {"wins": 0, "losses": 0, "form_str": "?", "matches_today": 0}
+    if not player_url:
         return empty
 
-    soup = fetch_page(h2h_url)
+    soup = fetch_page(player_url)
     if not soup:
         return empty
 
     try:
-        set1_wins = 0
-        set1_total = 0
-
-        # Chercher les lignes de matchs H2H avec scores par set
-        # Format : | DD.MM | Score | set1_p1 | set1_p2 | ...
         rows = soup.select("table tr")
+        wins = losses = matches_today = 0
+        form_chars = []
+
         for row in rows:
             cols = [c.get_text(strip=True) for c in row.find_all("td")]
-            if len(cols) < 4:
+            if len(cols) < 2:
                 continue
 
-            # Colonnes set 1 : généralement cols[2] et cols[3]
-            try:
-                s1_p1 = int(cols[2]) if cols[2].isdigit() else None
-                s1_p2 = int(cols[3]) if cols[3].isdigit() else None
-                if s1_p1 is not None and s1_p2 is not None:
-                    set1_total += 1
-                    fav_won_s1 = (s1_p1 > s1_p2) if fav_is_p1 else (s1_p2 > s1_p1)
-                    if fav_won_s1:
-                        set1_wins += 1
-            except:
+            date_col  = cols[0]
+            score_col = cols[1]
+
+            if not re.match(r'\d{2}\.\d{2}', date_col):
                 continue
 
-        rate = set1_wins / set1_total if set1_total > 0 else 0.0
-        return {"set1_wins": set1_wins, "set1_total": set1_total, "set1_rate": rate}
+            # Compter matchs aujourd'hui
+            row_date = date_col[:5]  # "DD.MM"
+            if row_date == today_str:
+                matches_today += 1
 
+            # Score global visible (pas BASE)
+            if score_col and score_col != "BASE":
+                score_m = re.match(r'(\d+)\s*:\s*(\d+)', score_col)
+                if score_m:
+                    s1, s2 = int(score_m.group(1)), int(score_m.group(2))
+                    if s1 > s2:
+                        wins += 1
+                        form_chars.append("V")
+                    else:
+                        losses += 1
+                        form_chars.append("D")
+
+        form_str = "".join(form_chars[:5]) if form_chars else "?"
+        return {
+            "wins":          wins,
+            "losses":        losses,
+            "form_str":      form_str,
+            "matches_today": matches_today,
+        }
     except Exception as e:
-        log.debug(f"Set1 analysis error: {e}")
+        log.debug(f"Player data error [{player_url}]: {e}")
         return empty
 
-# ─── Logique d'analyse ────────────────────────────────────────────────────────
+# ─── Set 1 du dernier H2H ────────────────────────────────────────────────────
+
+def get_last_h2h_set1(match_url: str, p1_name: str) -> str | None:
+    """
+    Scrape la page du dernier match H2H pour extraire le score du set 1.
+    Retourne "p1" si P1 a gagné le set 1, "p2" sinon, None si indispo.
+    """
+    if not match_url:
+        return None
+
+    soup = fetch_page(match_url)
+    if not soup:
+        return None
+
+    try:
+        # Chercher le score dans la page du match
+        # Format : "3 : 1 (11:9 8:11 11:7 11:6)"
+        text = soup.get_text()
+
+        # Score complet avec sets entre parenthèses
+        sets_m = re.search(r'\((\d+:\d+)', text)
+        if sets_m:
+            set1 = sets_m.group(1)
+            parts = set1.split(":")
+            if len(parts) == 2:
+                s1, s2 = int(parts[0]), int(parts[1])
+                # Déterminer si P1 (home) a gagné le set 1
+                home_link = soup.find("a", href=re.compile(r"/players/"))
+                if home_link:
+                    home_name = " ".join(home_link.get_text().split())
+                    p1_is_home = p1_name.split()[0].lower() in home_name.lower()
+                    if p1_is_home:
+                        return "p1" if s1 > s2 else "p2"
+                    else:
+                        return "p2" if s1 > s2 else "p1"
+        return None
+    except Exception as e:
+        log.debug(f"Set1 H2H error: {e}")
+        return None
+
+# ─── Analyse principale ───────────────────────────────────────────────────────
 
 def analyze_match(match: dict) -> dict | None:
     """
-    Analyse complète :
-    - H2H global → confiance générale
-    - H2H set 1 → propose WIN 1er SET ou WIN MATCH
+    Signal principal : H2H dominant
+    Données contextuelles : set 1 dernier H2H, forme, fatigue
+    Ces données enrichissent le message mais ne bloquent pas encore
+    (phase d'observation pour calibrer les filtres)
     """
-    h2h      = match.get("h2h", {"p1_wins": 0, "p2_wins": 0, "total": 0})
-    score_p1 = 50
+    h2h = match.get("h2h", {"p1_wins": 0, "p2_wins": 0, "total": 0})
 
-    if h2h["total"] >= 1:
-        win_rate = h2h["p1_wins"] / h2h["total"]
-        score_p1 += int((win_rate - 0.5) * 60)
-
-    score_p1 = max(0, min(score_p1, 100))
-    log.info(f"📊 {match['player1']} vs {match['player2']} | Score P1: {score_p1}")
-
-    if score_p1 >= 60:
-        bet_on   = "player1"
-        fav_name = match["player1"]
-        und_name = match["player2"]
-        confidence = score_p1
-        fav_is_p1  = True
-    elif score_p1 <= 40:
-        bet_on   = "player2"
-        fav_name = match["player2"]
-        und_name = match["player1"]
-        confidence = 100 - score_p1
-        fav_is_p1  = False
-    else:
+    # ── Signal H2H ───────────────────────────────────────────────
+    if h2h["total"] < 1:
+        log.debug(f"Pas de H2H pour {match['player1']} vs {match['player2']}")
         return None
 
-    # Analyse set 1 spécifique
-    set1_data = analyze_set1_from_h2h(match.get("h2h_url"), fav_is_p1)
-    log.info(f"Set1 data: {set1_data}")
+    win_rate_p1 = h2h["p1_wins"] / h2h["total"]
 
-    # Décision WIN SET 1 vs WIN MATCH
-    if set1_data["set1_total"] >= 2:
-        if set1_data["set1_rate"] >= 0.65:
-            bet_type = "SET1"   # fort en set 1 → on joue le set 1
-        elif set1_data["set1_rate"] >= 0.50:
-            bet_type = "MATCH"  # domine globalement mais pas toujours au set 1
-        else:
-            bet_type = "MATCH"  # perd souvent le set 1 mais gagne le match
+    if win_rate_p1 >= 0.60:
+        bet_on    = "player1"
+        fav_name  = match["player1"]
+        und_name  = match["player2"]
+        fav_is_p1 = True
+        h2h_wins  = h2h["p1_wins"]
+    elif win_rate_p1 <= 0.40:
+        bet_on    = "player2"
+        fav_name  = match["player2"]
+        und_name  = match["player1"]
+        fav_is_p1 = False
+        h2h_wins  = h2h["p2_wins"]
     else:
-        bet_type = "SET1"  # pas assez de données set 1 → on reste sur set 1 par défaut
+        log.debug(f"H2H trop équilibré ({win_rate_p1:.0%}) pour {match['player1']} vs {match['player2']}")
+        return None
+
+    today_str = match["date"]
+
+    # ── Données contextuelles ────────────────────────────────────
+    fav_url = match["p1_url"] if fav_is_p1 else match["p2_url"]
+    und_url = match["p2_url"] if fav_is_p1 else match["p1_url"]
+
+    fav_data = get_player_data(fav_url, today_str)
+    und_data = get_player_data(und_url, today_str)
+
+    # Set 1 du dernier H2H
+    set1_winner = get_last_h2h_set1(match.get("h2h_match_url"), match["player1"])
+    if set1_winner:
+        set1_fav_won = (set1_winner == "p1") if fav_is_p1 else (set1_winner == "p2")
+    else:
+        set1_fav_won = None
+
+    # Type de pari : SET1 par défaut
+    # Si set1_fav_won == False (a perdu le dernier set 1 H2H) → WIN MATCH
+    if set1_fav_won is False:
+        bet_type = "MATCH"
+    else:
+        bet_type = "SET1"
+
+    log.info(f"Analyse: {fav_name} | H2H {h2h_wins}/{h2h['total']} | Set1={set1_fav_won} | Today={fav_data['matches_today']} matchs | Forme={fav_data['form_str']}")
 
     return {
-        "bet_on":      bet_on,
-        "bet_type":    bet_type,  # "SET1" ou "MATCH"
-        "favorite":    fav_name,
-        "underdog":    und_name,
-        "confidence":  confidence,
-        "fav_is_p1":   fav_is_p1,
-        "set1_data":   set1_data,
+        "bet_on":          bet_on,
+        "bet_type":        bet_type,
+        "favorite":        fav_name,
+        "underdog":        und_name,
+        "fav_is_p1":       fav_is_p1,
+        "h2h_wins":        h2h_wins,
+        "h2h_total":       h2h["total"],
+        "set1_fav_won":    set1_fav_won,
+        "fav_form":        fav_data["form_str"],
+        "fav_today":       fav_data["matches_today"],
+        "und_today":       und_data["matches_today"],
     }
 
 # ─── Traitement alerte ────────────────────────────────────────────────────────
@@ -337,49 +404,51 @@ def process_alert(match: dict):
         return
 
     o1, o2 = odds[0], odds[1]
-    log.info(f"🔍 {match['player1']} ({o1}) vs {match['player2']} ({o2})")
 
-    # Option 3 : favori requis
+    # Option 3 : filtre d'entrée — match avec favori marqué ?
     if REQUIRE_FAVORITE and min(o1, o2) > MAX_FAVORITE_ODDS:
-        log.info(f"❌ Pas de favori clair")
+        log.debug(f"Pas de favori clair: {match['player1']} {o1} vs {match['player2']} {o2}")
         return
 
+    # Analyse
     verdict = analyze_match(match)
     if not verdict:
         return
 
-    # Cote du favori désigné
+    # Cotes
     fav_odds = o1 if verdict["fav_is_p1"] else o2
+    und_odds = o2 if verdict["fav_is_p1"] else o1
 
-    # Option 1 : filtre fenêtre de cotes
+    # Option 1 : validation cote après analyse
     odds_in_window = MIN_FAVORITE_ODDS <= fav_odds <= MAX_FAVORITE_ODDS
     if not IGNORE_ODDS_FILTER and not odds_in_window:
-        log.info(f"❌ Cote {fav_odds} hors fenêtre [{MIN_FAVORITE_ODDS}-{MAX_FAVORITE_ODDS}]")
+        log.info(f"❌ Joueur désigné ({verdict['favorite']}) cote {fav_odds} hors fenêtre — divergence analyse/marché")
         return
 
-    h2h = match.get("h2h", {})
     analysis = {
-        "match_id":       mid,
-        "player1":        match["player1"],
-        "player2":        match["player2"],
-        "favorite":       verdict["favorite"],
-        "underdog":       verdict["underdog"],
-        "fav_odds":       fav_odds,
-        "und_odds":       o2 if verdict["fav_is_p1"] else o1,
-        "confidence":     verdict["confidence"],
-        "bet_type":       verdict["bet_type"],
-        "h2h_wins":       h2h.get("p1_wins") if verdict["fav_is_p1"] else h2h.get("p2_wins"),
-        "h2h_total":      h2h.get("total", 0),
-        "set1_data":      verdict["set1_data"],
-        "time":           match["time"],
-        "competition":    match["competition"],
+        "match_id":      mid,
+        "player1":       match["player1"],
+        "player2":       match["player2"],
+        "favorite":      verdict["favorite"],
+        "underdog":      verdict["underdog"],
+        "fav_odds":      fav_odds,
+        "und_odds":      und_odds,
+        "bet_type":      verdict["bet_type"],
+        "h2h_wins":      verdict["h2h_wins"],
+        "h2h_total":     verdict["h2h_total"],
+        "set1_fav_won":  verdict["set1_fav_won"],
+        "fav_form":      verdict["fav_form"],
+        "fav_today":     verdict["fav_today"],
+        "und_today":     verdict["und_today"],
+        "time":          match["time"],
+        "competition":   match["competition"],
         "odds_in_window": odds_in_window,
     }
 
     send_telegram(format_alert(analysis), ALERT_DESTINATIONS)
     alerted.add(mid)
     tracking[mid] = analysis
-    log.info(f"✅ Alerte: {verdict['favorite']} | {verdict['bet_type']}")
+    log.info(f"✅ Alerte: {verdict['favorite']} | {verdict['bet_type']} | H2H {verdict['h2h_wins']}/{verdict['h2h_total']}")
 
 # ─── Résultats + bilan ────────────────────────────────────────────────────────
 
@@ -412,40 +481,36 @@ def check_results():
         if p2_first not in snippet.lower():
             continue
 
-        # Score final du match ex: "3:1" "3:0" "2:3"
+        # Score final : format "3:1" ou "1:3" etc.
         final_m = re.search(r'\b([0-4])\s*:\s*([0-4])\b', snippet)
         if not final_m:
             continue
 
         s1, s2 = int(final_m.group(1)), int(final_m.group(2))
-        # Vérifier que c'est bien un score de match (somme >= 2, max <= 7)
         if s1 + s2 < 2 or s1 + s2 > 7:
             continue
 
         fav_won_match = (s1 > s2) if fav_is_p1 else (s2 > s1)
 
-        # Chercher score set 1 après le score global
-        # Format page résultats : score global puis (set1_p1:set1_p2, ...)
-        set1_section = snippet[final_m.end():]
-        set1_m = re.search(r'\(?\s*(\d+)\s*:\s*(\d+)', set1_section)
-
+        # Score set 1 dans les parenthèses après le score global
+        after = snippet[final_m.end():]
+        set1_m = re.search(r'\(?\s*(\d{1,2})\s*:\s*(\d{1,2})', after)
         if set1_m:
-            ss1, ss2    = int(set1_m.group(1)), int(set1_m.group(2))
-            fav_won_s1  = (ss1 > ss2) if fav_is_p1 else (ss2 > ss1)
+            ss1, ss2   = int(set1_m.group(1)), int(set1_m.group(2))
+            fav_won_s1 = (ss1 > ss2) if fav_is_p1 else (ss2 > ss1)
         else:
-            fav_won_s1 = fav_won_match  # fallback
+            fav_won_s1 = fav_won_match
 
-        # Enregistrer selon le type de pari
         if a["bet_type"] == "SET1":
             key = "won" if fav_won_s1 else "lost"
             bilan["set1"][key] += 1
             bilan["week"]["set1"][key] += 1
-            log.info(f"📊 Bilan SET1: {key} — {a['favorite']}")
+            log.info(f"📊 SET1 {key}: {a['favorite']} (set1={ss1 if set1_m else '?'}:{ss2 if set1_m else '?'})")
         else:
             key = "won" if fav_won_match else "lost"
             bilan["match"][key] += 1
             bilan["week"]["match"][key] += 1
-            log.info(f"📊 Bilan MATCH: {key} — {a['favorite']}")
+            log.info(f"📊 MATCH {key}: {a['favorite']} ({s1}:{s2})")
 
         seen.add(mid)
         changed = True
@@ -465,12 +530,8 @@ def format_bilan(b: dict, period: str) -> str:
     label = "📅 BILAN QUOTIDIEN" if period == "daily" else "📆 BILAN HEBDOMADAIRE"
     return (
         f"{label}\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏓 <b>WIN 1er SET</b>\n"
-        f"  ✅ {s1['won']} gagné  ({pct(s1['won'], s1['lost'])})\n"
-        f"  ❌ {s1['lost']} perdu\n\n"
-        f"🏆 <b>WIN MATCH</b>\n"
-        f"  ✅ {ma['won']} gagné  ({pct(ma['won'], ma['lost'])})\n"
-        f"  ❌ {ma['lost']} perdu\n"
+        f"🏓 WIN 1er SET : ✅ {s1['won']} / ❌ {s1['lost']}  ({pct(s1['won'], s1['lost'])})\n"
+        f"🏆 WIN MATCH   : ✅ {ma['won']} / ❌ {ma['lost']}  ({pct(ma['won'], ma['lost'])})\n"
     )
 
 def bilan_thread():
@@ -493,10 +554,7 @@ def bilan_thread():
         if now.weekday() == 6 and now.hour == 0 and now.minute == 0 and week_str != last_weekly:
             bilan = load_bilan()
             send_telegram(format_bilan(bilan, "weekly"), ALERT_DESTINATIONS)
-            bilan["week"] = {
-                "set1":  {"won": 0, "lost": 0},
-                "match": {"won": 0, "lost": 0},
-            }
+            bilan["week"] = {"set1": {"won": 0, "lost": 0}, "match": {"won": 0, "lost": 0}}
             save_bilan(bilan)
             last_weekly = week_str
             log.info("📆 Bilan hebdomadaire envoyé")
@@ -506,44 +564,45 @@ def bilan_thread():
 # ─── Format message ───────────────────────────────────────────────────────────
 
 def format_alert(a: dict) -> str:
-    comp     = COMP_LABELS.get(a["competition"], a["competition"])
-    h2h_str  = f"{a['h2h_wins']}/{a['h2h_total']}" if a.get("h2h_total") else "N/A"
-    s1       = a.get("set1_data", {})
-    s1_str   = f"{s1['set1_wins']}/{s1['set1_total']} set 1" if s1.get("set1_total") else ""
+    comp = COMP_LABELS.get(a["competition"], a["competition"])
+
+    # Cotes sur les noms
+    if a["favorite"] == a["player1"]:
+        p1_display = f"{a['player1']} ({a['fav_odds']})"
+        p2_display = f"{a['player2']} ({a['und_odds']})"
+    else:
+        p1_display = f"{a['player1']} ({a['und_odds']})"
+        p2_display = f"{a['player2']} ({a['fav_odds']})"
 
     # Type de pari
-    if a["bet_type"] == "SET1":
-        pari_str = f"✅ <b>PARI : {a['favorite']} — WIN 1er SET</b>"
+    pari_str = "WIN 1er SET" if a["bet_type"] == "SET1" else "WIN MATCH"
+
+    # Set 1 dernier H2H
+    if a["set1_fav_won"] is True:
+        set1_str = "✅ gagné"
+    elif a["set1_fav_won"] is False:
+        set1_str = "❌ perdu"
     else:
-        pari_str = f"✅ <b>PARI : {a['favorite']} — WIN MATCH</b>"
+        set1_str = "?"
 
-    # Indicateur de confiance
-    conf = a["confidence"]
-    if conf >= 80:
-        conf_emoji = "🔥"
-    elif conf >= 65:
-        conf_emoji = "💪"
-    else:
-        conf_emoji = "📈"
+    # Fatigue
+    today_str = ""
+    if a["fav_today"] >= 3:
+        today_str = f" ⚠️ {a['fav_today']}e match aujourd'hui"
+    elif a["fav_today"] >= 2:
+        today_str = f" ({a['fav_today']}e match)"
 
-    # Note si hors fenêtre normale
-    odds_note = "\n⚠️ <i>Cote hors fenêtre normale</i>" if (IGNORE_ODDS_FILTER and not a["odds_in_window"]) else ""
-
-    # Ligne analyse H2H
-    h2h_line = f"📊 H2H : {h2h_str}"
-    if s1_str:
-        h2h_line += f" | {s1_str}"
-
-    now_utc = datetime.now(tz=timezone.utc).strftime("%H:%M UTC")
+    # Note si hors fenêtre
+    odds_note = "\n⚠️ <i>Cote hors fenêtre — signal analyse seul</i>" if (IGNORE_ODDS_FILTER and not a["odds_in_window"]) else ""
 
     return (
         f"🏓 <b>{comp}</b>\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚔️  {a['player1']} ({a['fav_odds'] if a['favorite']==a['player1'] else a['und_odds']}) "
-        f"vs {a['player2']} ({a['und_odds'] if a['favorite']==a['player1'] else a['fav_odds']})\n"
-        f"🕐  {a['time']} UTC{odds_note}\n\n"
-        f"{pari_str}\n"
-        f"{h2h_line}\n"
-        f"{conf_emoji} Confiance : {conf}%"
+        f"⚔️  {p1_display} vs {p2_display}\n"
+        f"🕐  {a['time']} UTC{today_str}{odds_note}\n\n"
+        f"✅ <b>PARI : {a['favorite']} — {pari_str}</b>\n\n"
+        f"📊 H2H : {a['h2h_wins']}/{a['h2h_total']} matchs\n"
+        f"📊 Set 1 dernier H2H : {set1_str}\n"
+        f"📊 Forme : {a['fav_form']}"
     )
 
 # ─── Boucle principale ───────────────────────────────────────────────────────
@@ -551,11 +610,10 @@ def format_alert(a: dict) -> str:
 def run():
     log.info("🚀 Bot démarré")
     opts = [
-        f"• Favori requis (cote ≤ {MAX_FAVORITE_ODDS}) : {'✅' if REQUIRE_FAVORITE else '❌'}",
-        f"• Filtre cotes [{MIN_FAVORITE_ODDS}-{MAX_FAVORITE_ODDS}] : {'❌ désactivé' if IGNORE_ODDS_FILTER else '✅'}",
+        f"• Filtre favori (cote ≤ {MAX_FAVORITE_ODDS}) : {'✅' if REQUIRE_FAVORITE else '❌'}",
+        f"• Validation cote après analyse : {'❌ désactivée' if IGNORE_ODDS_FILTER else '✅'}",
         f"• Compétitions : {', '.join(COMPETITIONS)}",
         f"• Scan toutes les {CHECK_INTERVAL_SECONDS}s",
-        f"• Source : score-tennis.com",
     ]
     send_telegram(
         "🤖 <b>Bot Setka Cup démarré</b>\n━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(opts),
@@ -571,11 +629,10 @@ def run():
                 for match in matches:
                     process_alert(match)
             check_results()
-
         except Exception as e:
             log.error(f"Erreur boucle: {e}")
 
-        log.info(f"⏳ Pause {CHECK_INTERVAL_SECONDS}s...")
+        log.info(f"⏳ {CHECK_INTERVAL_SECONDS}s...")
         time.sleep(CHECK_INTERVAL_SECONDS)
 
 
