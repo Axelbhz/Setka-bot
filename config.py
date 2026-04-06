@@ -32,7 +32,7 @@ IGNORE_ODDS_FILTER = True
 # ── Option 2 : EXIGER UN FAVORI CLAIR ──────────────────────────
 # True  = ignore les matchs sans favori (cote ≤ MAX_FAVORITE_ODDS)
 # False = analyse tous les matchs
-REQUIRE_FAVORITE = False
+REQUIRE_FAVORITE = True
 
 # ── Paramètres H2H ─────────────────────────────────────────────
 MIN_H2H_MATCHES = 1
