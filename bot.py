@@ -209,7 +209,6 @@ def fetch_matches_today(competition_key: str) -> list:
     today_str    = datetime.now(tz=timezone.utc).strftime("%d.%m")
     matches      = []
 
-    # Decouper en blocs par date/heure
     blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', r.text)
 
     i = 1
@@ -225,19 +224,19 @@ def fetch_matches_today(competition_key: str) -> list:
         match_date = date_m.group(1)
         match_time = date_m.group(2)
 
-        # Filtrer par date
         if match_date != today_str:
             i += 2
             continue
 
-        # Filtrer par competition AVANT de parser le HTML (rapide)
-        if section_name and section_name not in block_html:
-            i += 2
-            continue
-
-        # Parser le bloc
         block_soup = BeautifulSoup(block_html, "html.parser")
         block_text = block_soup.get_text(separator="\n")
+
+        # Le nom de section DOIT etre dans les 100 premiers caracteres
+        # C'est toujours le premier element textuel apres la date
+        opening = block_text.strip()[:100]
+        if section_name not in opening:
+            i += 2
+            continue
 
         match = parse_match_block(
             block_soup, block_text,
