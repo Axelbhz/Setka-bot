@@ -27,7 +27,7 @@ MAX_FAVORITE_ODDS = 1.70
 # ── Option 1 : IGNORER le filtre de cotes ──────────────────────
 # False = cote entre MIN et MAX requise
 # True  = alerte même si hors fenêtre (mode analyse)
-IGNORE_ODDS_FILTER = True
+IGNORE_ODDS_FILTER = False
 
 # ── Option 2 : EXIGER UN FAVORI CLAIR ──────────────────────────
 # True  = ignore les matchs sans favori (cote ≤ MAX_FAVORITE_ODDS)
