@@ -108,15 +108,14 @@ def fetch_page(url: str) -> BeautifulSoup | None:
 def parse_match_block(block_soup: BeautifulSoup, block_text: str,
                       match_date: str, match_time: str,
                       competition_key: str, section_name: str) -> dict | None:
-    """
-    Parse un bloc HTML correspondant a un match.
-    Retourne le dict match ou None si invalide.
-    """
-    # 1. Verifier que c'est la bonne competition
-    if section_name not in block_text:
+
+    # 1. Le nom de competition doit apparaitre AVANT les cotes W1/W2
+    #    dans les 500 premiers caracteres du bloc
+    first_part = block_text[:500]
+    if section_name not in first_part:
         return None
 
-    # 2. Verifier qu'il y a "face-to-face" (marqueur d'un vrai bloc match)
+    # 2. Verifier qu'il y a "face-to-face"
     if "face-to-face" not in block_text:
         return None
 
@@ -143,50 +142,37 @@ def parse_match_block(block_soup: BeautifulSoup, block_text: str,
     if not p1 or not p2 or p1 == p2:
         return None
 
-    # Verification : les deux joueurs doivent etre dans le meme bloc
-    # En cherchant les deux noms dans block_text
     if p1.split()[0] not in block_text or p2.split()[0] not in block_text:
         return None
 
-    # 5. H2H global depuis "X : Y\nscore of recent face-to-face"
+    # 5. H2H global
     h2h_m  = re.search(r'(\d+)\s*:\s*(\d+)\s*\n?\s*score of recent face-to-face', block_text)
     h2h_p1 = h2h_p2 = 0
     if h2h_m:
         h2h_p1 = int(h2h_m.group(1))
         h2h_p2 = int(h2h_m.group(2))
 
-    # 6. Score set 1 du dernier match H2H
-    # Le tableau visible contient la premiere ligne non-BASE avec les scores
-    # Format : | DD.MM HH:MM | Score | s1_p1 | s1_p2 | s2_p1 | s2_p2 | ...
-    # On cherche les cellules numeriques apres la premiere date visible
+    # 6. Score set 1 du dernier H2H depuis le tableau
     set1_p1 = set1_p2 = None
-
     rows = block_soup.select("table tr")
     for row in rows:
         cols = [td.get_text(strip=True) for td in row.find_all("td")]
         if len(cols) < 6:
             continue
-        # Premiere colonne : date format DD.MM ou DD.MM.YY
         if not re.match(r'\d{2}\.\d{2}', cols[0]):
             continue
-        # Deuxieme colonne : score global ex "3:0" "1:3"
-        score_col = cols[1]
-        if not re.match(r'\d\s*:\s*\d', score_col):
+        if not re.match(r'\d\s*:\s*\d', cols[1]):
             continue
-        # Score "BASE" = cache, on passe
         if "BASE" in " ".join(cols):
             continue
-        # Colonnes 2 et 3 = set 1 (apres date et score global)
         try:
-            s1 = int(cols[2])
-            s2 = int(cols[3])
-            set1_p1 = s1
-            set1_p2 = s2
+            set1_p1 = int(cols[2])
+            set1_p2 = int(cols[3])
             break
         except (ValueError, IndexError):
             continue
 
-    # 7. URLs joueurs pour fatigue
+    # 7. URLs joueurs
     p1_href = player_links[0].get("href", "")
     p2_href = player_links[1].get("href", "")
     p1_url  = p1_href if p1_href.startswith("http") else f"{BASE_URL}{p1_href}"
@@ -202,8 +188,8 @@ def parse_match_block(block_soup: BeautifulSoup, block_text: str,
         "competition": competition_key,
         "odds":        [w1, w2],
         "h2h":         {"p1_wins": h2h_p1, "p2_wins": h2h_p2, "total": h2h_p1 + h2h_p2},
-        "set1_p1":     set1_p1,   # score set 1 joueur 1 dans dernier H2H
-        "set1_p2":     set1_p2,   # score set 1 joueur 2 dans dernier H2H
+        "set1_p1":     set1_p1,
+        "set1_p2":     set1_p2,
         "p1_url":      p1_url,
         "p2_url":      p2_url,
     }
