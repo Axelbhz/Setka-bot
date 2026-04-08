@@ -192,10 +192,11 @@ def fetch_matches_today(competition_key: str) -> list:
     except:
         return []
 
-    section_name = COMP_SECTION_NAMES.get(competition_key, "")
-    today_str    = datetime.now(tz=timezone.utc).strftime("%d.%m")
-    matches      = []
-    blocks       = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', r.text)
+    # On récupère le nom exact (ex: "Setka Cup. Czech Republic") défini pour cette clé
+    target_section = COMP_SECTION_NAMES.get(competition_key, "")
+    today_str = datetime.now(tz=timezone.utc).strftime("%d.%m")
+    matches = []
+    blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', r.text)
 
     i = 1
     while i < len(blocks) - 1:
@@ -206,33 +207,29 @@ def fetch_matches_today(competition_key: str) -> list:
             continue
 
         block_soup = BeautifulSoup(block_html, "html.parser")
-        block_text = block_soup.get_text(separator="\n").strip()
-
-        # CORRECTION BUG PRO LEAGUE :
-        # Chercher le nom de section dans les divs de type "tag" du bloc
-        # C'est le seul endroit fiable car le nom de section est dans un div.tag
+        
+        # --- FILTRAGE DYNAMIQUE ET STRICT ---
+        # On cherche les "tags" de compétition dans le bloc (ex: <div class="tag">...</div>)
         tag_divs = block_soup.find_all("div", class_=lambda c: c and "tag" in c)
-        comp_names_in_block = [d.get_text(strip=True) for d in tag_divs]
-        if section_name not in comp_names_in_block:
+        found_sections = [d.get_text(strip=True) for d in tag_divs]
+        
+        # On n'accepte le match QUE si le nom exact de la section est présent
+        # Cela empêche "Setka Cup. Ukraine" d'être confondu avec "Setka Cup. Czech Republic"
+        if target_section not in found_sections:
             i += 2
             continue
+        # ------------------------------------
 
+        block_text = block_soup.get_text(separator="\n").strip()
         match = parse_match_block(
             block_soup, block_text,
             date_m.group(1), date_m.group(2),
-            competition_key, section_name
+            competition_key, target_section
         )
         if match:
-            log.info(
-                f"Match: {match['player1']} vs {match['player2']} | "
-                f"W1={match['odds'][0]} W2={match['odds'][1]} | "
-                f"H2H {match['h2h']['p1_wins']}:{match['h2h']['p2_wins']} | "
-                f"Set1 {match['set1_p1']}:{match['set1_p2']}"
-            )
             matches.append(match)
         i += 2
 
-    log.info(f"[{competition_key}] {len(matches)} matchs")
     return matches
 
 # ─── Fatigue ──────────────────────────────────────────────────────────────────
