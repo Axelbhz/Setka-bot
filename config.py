@@ -32,7 +32,7 @@ REQUIRE_FAVORITE = True
 
 # 🎯 CRITÈRE DE DOMINATION RÉELLE (Friction Zéro)
 # Évite les matchs où le dernier Set 1 était trop serré (ex: 12-10)
-STRICT_DOMINATION_FILTER = True
+STRICT_DOMINATION_FILTER = False
 MIN_POINT_DIFF_LAST_SET1 = 3 # Écart minimal (3 = 11-8 ou mieux)
 
 # ── Paramètres H2H ─────────────────────────────────────────────
