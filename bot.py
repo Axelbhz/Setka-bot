@@ -187,42 +187,40 @@ def parse_match_block(block_soup: BeautifulSoup, block_text: str,
 def fetch_matches_today(competition_key: str) -> list:
     try:
         r = requests.get(f"{BASE_URL}/up-games/", headers=HEADERS, timeout=15)
-        if r.status_code != 200:
-            return []
-    except:
-        return []
+        if r.status_code != 200: return []
+    except: return []
 
-    # On récupère le nom exact (ex: "Setka Cup. Czech Republic") défini pour cette clé
     target_section = COMP_SECTION_NAMES.get(competition_key, "")
     today_str = datetime.now(tz=timezone.utc).strftime("%d.%m")
     matches = []
+    
+    # On découpe la page proprement par blocs de matchs
     blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', r.text)
 
     i = 1
     while i < len(blocks) - 1:
         header, block_html = blocks[i], blocks[i + 1]
         date_m = re.match(r'(\d{2}\.\d{2})\s+(\d{2}:\d{2})', header)
+        
         if not date_m or date_m.group(1) != today_str:
             i += 2
             continue
 
         block_soup = BeautifulSoup(block_html, "html.parser")
         
-        # --- FILTRAGE DYNAMIQUE ET STRICT ---
-        # On cherche les "tags" de compétition dans le bloc (ex: <div class="tag">...</div>)
-        tag_divs = block_soup.find_all("div", class_=lambda c: c and "tag" in c)
-        found_sections = [d.get_text(strip=True) for d in tag_divs]
+        # --- TEST CHIRURGICAL ---
+        # On récupère TOUT le texte du bloc et on regarde la TOUTE PREMIÈRE LIGNE
+        lines = [l.strip() for l in block_soup.get_text(separator="\n").split("\n") if l.strip()]
         
-        # On n'accepte le match QUE si le nom exact de la section est présent
-        # Cela empêche "Setka Cup. Ukraine" d'être confondu avec "Setka Cup. Czech Republic"
-        if target_section not in found_sections:
+        # Si la première ligne n'est pas EXACTEMENT ta ligue (ex: "Setka Cup. Czech Republic")
+        # Alors on ignore DIRECTEMENT. Ça tue les mélanges avec l'Ukraine.
+        if not lines or target_section.lower() != lines[0].lower():
             i += 2
             continue
-        # ------------------------------------
+        # ------------------------
 
-        block_text = block_soup.get_text(separator="\n").strip()
         match = parse_match_block(
-            block_soup, block_text,
+            block_soup, "\n".join(lines),
             date_m.group(1), date_m.group(2),
             competition_key, target_section
         )
