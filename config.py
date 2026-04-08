@@ -1,16 +1,18 @@
 # ═══════════════════════════════════════════════════════════════
-#  CONFIGURATION — SETKA CUP BETTING BOT
+#   CONFIGURATION — SETKA CUP BETTING BOT (V2 Évolutive)
 # ═══════════════════════════════════════════════════════════════
 
 # ── Telegram ────────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN = "8689450824:AAE9NAsDGI9CdLP6qcOvQ3pM5kMnN_6jb-Y"
+TELEGRAM_BOT_TOKEN = "BOT_TOKEN_ICI"
 
 ALERT_DESTINATIONS = [
-    "406477026",
-    "-1003521219534",
+    "CHAT_ID_ICI",
+    "CANAL_ID_ICI",
 ]
 
 # ── Compétitions surveillées ────────────────────────────────────
+# Il suffit de décommenter (#) pour activer une compétition.
+# La protection contre les mauvais matchs sera gérée dans le code principal.
 COMPETITIONS = [
     "setka_cup_cz",
     # "setka_cup_ukraine",
@@ -24,15 +26,14 @@ COMPETITIONS = [
 MIN_FAVORITE_ODDS = 1.25
 MAX_FAVORITE_ODDS = 1.70
 
-# ── Option 1 : IGNORER le filtre de cotes ──────────────────────
-# False = cote entre MIN et MAX requise
-# True  = alerte même si hors fenêtre (mode analyse)
+# ── Options de Filtrage ─────────────────────────────────────────
 IGNORE_ODDS_FILTER = False
-
-# ── Option 2 : EXIGER UN FAVORI CLAIR ──────────────────────────
-# True  = ignore les matchs sans favori (cote ≤ MAX_FAVORITE_ODDS)
-# False = analyse tous les matchs
 REQUIRE_FAVORITE = True
+
+# 🎯 CRITÈRE DE DOMINATION RÉELLE (Friction Zéro)
+# Évite les matchs où le dernier Set 1 était trop serré (ex: 12-10)
+STRICT_DOMINATION_FILTER = True
+MIN_POINT_DIFF_LAST_SET1 = 3 # Écart minimal (3 = 11-8 ou mieux)
 
 # ── Paramètres H2H ─────────────────────────────────────────────
 MIN_H2H_MATCHES = 1
@@ -42,10 +43,14 @@ MIN_WIN_RATE    = 0.60
 SET1_ALERT_LABEL  = "WIN 1er SET"
 MATCH_ALERT_LABEL = "WIN MATCH"
 
-# ── Paramètres inutilisés (compatibilité) ───────────────────────
+# ── Systèmes & Bilans ───────────────────────────────────────────
+STARTUP_MESSAGE_ENABLED = True  # Pour corriger ton bug de démarrage
+ENABLE_DAILY_RECAP = True       # Pour corriger ton bug de bilan
 CHECK_INTERVAL_MINUTES = 1
-RECAP_INTERVAL_HOURS   = 2
-RECAP_WINDOW_HOURS     = 2
+
+# ── Paramètres de compatibilité (À garder pour éviter les crashs) 
 SET2_ALERT_LABEL       = "WIN 2ème SET"
 DISABLE_SET2_RECOVERY  = True
-RECAP_DESTINATIONS     = []
+RECAP_INTERVAL_HOURS   = 24
+RECAP_WINDOW_HOURS     = 2
+RECAP_DESTINATIONS     = ALERT_DESTINATIONS
