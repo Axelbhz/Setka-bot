@@ -29,7 +29,7 @@ REQUIRE_FAVORITE   = True
 # Filtre marge de securite (Friction Zero)
 # True  = ignore les matchs ou le favori a gagne le set1 avec ecart faible
 # False = desactive (mode observation)
-STRICT_DOMINATION_FILTER  = True
+STRICT_DOMINATION_FILTER  = False
 MIN_POINT_DIFF_LAST_SET1  = 3  # Ecart minimal en points (3 = 11-8 ou mieux)
 
 # ── Parametres H2H ─────────────────────────────────────────────
