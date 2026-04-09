@@ -141,57 +141,28 @@ def analyze_match(match: dict) -> dict | None:
 def fetch_matches_today(competition_key: str) -> list:
     r = fetch_page(f"{BASE_URL}/up-games/")
     if not r: return []
-    
-    target_section = COMP_SECTION_NAMES.get(competition_key, "")
+    section_name = COMP_SECTION_NAMES.get(competition_key, "")
     today_str = datetime.now(tz=timezone.utc).strftime("%d.%m")
     matches = []
-
-    # On cherche tous les blocs de matchs (ils sont souvent dans des divs ou séparés par des hr/br)
-    # Ici on utilise une recherche par texte pour isoler uniquement ce qui appartient à la ligue
-    content_html = r.decode_contents()
     
-    # On découpe la page par ligue d'abord
-    # On cherche l'endroit où commence la section cible (ex: Setka Cup Ukraine)
-    start_idx = content_html.find(target_section)
-    if start_idx == -1:
-        return []
-
-    # On prend le contenu à partir de là jusqu'à la prochaine section ou fin de page
-    # Cela évite de lire les matchs des autres ligues qui sont plus bas
-    sub_content = content_html[start_idx:]
-    next_section_idx = 1000000 # Valeur par défaut
-    
-    # On cherche si une autre ligue commence après pour s'arrêter avant
-    for other_section in COMP_SECTION_NAMES.values():
-        if other_section != target_section:
-            idx = sub_content.find(other_section, 50) # On ignore les 50 premiers caractères
-            if idx != -1 and idx < next_section_idx:
-                next_section_idx = idx
-    
-    # On a maintenant le morceau de code qui ne contient QUE notre ligue
-    league_html = sub_content[:next_section_idx]
-    
-    # On découpe maintenant par date/heure à l'intérieur de cette ligue
-    blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', league_html)
-    
+    # CORRECTION ROBUSTESSE LIGUE
+    blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', r.decode_contents())
     i = 1
     while i < len(blocks) - 1:
         header, block_html = blocks[i], blocks[i + 1]
         if today_str not in header:
             i += 2; continue
-            
+        
         block_soup = BeautifulSoup(block_html, "html.parser")
         block_text = block_soup.get_text(separator="\n").strip()
         
-        # On vérifie qu'on a bien un H2H sinon c'est un bloc vide
-        if "face-to-face" not in block_text.lower():
+        # On vérifie si la section cible est dans les premières lignes du texte nettoyé
+        if section_name.lower() not in "\n".join(block_text.split("\n")[:3]).lower():
             i += 2; continue
 
-        match = parse_match_block(block_soup, block_text, today_str, header.split()[1], competition_key, target_section)
-        if match:
-            matches.append(match)
+        match = parse_match_block(block_soup, block_text, today_str, header.split()[1], competition_key, section_name)
+        if match: matches.append(match)
         i += 2
-        
     return matches
 
 def format_alert(a: dict) -> str:
