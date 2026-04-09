@@ -12,12 +12,8 @@ ALERT_DESTINATIONS = [
 
 # ── Compétitions surveillées ────────────────────────────────────
 # Il suffit de décommenter (#) pour activer une compétition.
-# La protection contre les mauvais matchs sera gérée dans le code principal.
 COMPETITIONS = [
     "setka_cup_cz",
-    # "setka_cup_ukraine",
-    # "setka_cup_intl",
-    # "liga_pro_russia",
     # "pro_league_cz",
     # "tt_cup_cz",
 ]
@@ -44,13 +40,24 @@ SET1_ALERT_LABEL  = "WIN 1er SET"
 MATCH_ALERT_LABEL = "WIN MATCH"
 
 # ── Systèmes & Bilans ───────────────────────────────────────────
-STARTUP_MESSAGE_ENABLED = True  # Pour corriger ton bug de démarrage
-ENABLE_DAILY_RECAP = True       # Pour corriger ton bug de bilan
+STARTUP_MESSAGE_ENABLED = True
+ENABLE_DAILY_RECAP = True
 CHECK_INTERVAL_MINUTES = 1
 
-# ── Paramètres de compatibilité (À garder pour éviter les crashs) 
+# ── Paramètres de compatibilité (À garder pour éviter les crashs)
 SET2_ALERT_LABEL       = "WIN 2ème SET"
 DISABLE_SET2_RECOVERY  = True
 RECAP_INTERVAL_HOURS   = 24
 RECAP_WINDOW_HOURS     = 2
 RECAP_DESTINATIONS     = ALERT_DESTINATIONS
+
+# ── Cookie de session score-tennis.com ─────────────────────────
+# À mettre à jour quand le bot ne trouve plus aucun match.
+# Comment récupérer la valeur :
+#   1. Ouvre score-tennis.com/up-games/?champ=all dans Chrome
+#   2. Appuie sur F12 → onglet "Network"
+#   3. Recharge la page (F5)
+#   4. Clique sur la ligne "up-games" dans la liste
+#   5. Onglet "Headers" → cherche "cookie:" → copie la valeur après "PHPSESSID="
+#      (s'arrête au premier ";" )
+PHPSESSID = "WF3LFf2ZOVuGCq7QyOVhMzD4QkIZs9xX"
