@@ -14,6 +14,7 @@ ALERT_DESTINATIONS = [
 # Il suffit de décommenter (#) pour activer une compétition.
 COMPETITIONS = [
     "setka_cup_cz",
+    "setka_cup_ua",
     # "pro_league_cz",
     # "tt_cup_cz",
 ]
