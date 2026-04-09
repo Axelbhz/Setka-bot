@@ -3,33 +3,22 @@ import time
 import logging
 from config import *
 
-# Logging pour voir ce qui se passe dans la console
 logging.basicConfig(
     level=logging.INFO, 
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.FileHandler("bot_api.log", encoding="utf-8"), logging.StreamHandler()]
 )
 log = logging.getLogger(__name__)
 
 def send_telegram(message: str):
-    """Envoie le message à toutes les destinations configurées"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    for chat_id in ALERT_DESTINATIONS:
+    for dest in ALERT_DESTINATIONS:
         try:
-            payload = {
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "HTML"
-            }
-            r = requests.post(url, json=payload, timeout=10)
-            if r.status_code == 200:
-                log.info(f"✅ Message envoyé à {chat_id}")
-            else:
-                log.error(f"❌ Erreur Telegram sur {chat_id}: {r.text}")
+            requests.post(url, json={"chat_id": dest, "text": message, "parse_mode": "HTML"}, timeout=10)
         except Exception as e:
-            log.error(f"⚠️ Erreur de connexion Telegram: {e}")
+            log.error(f"Erreur Telegram vers {dest}: {e}")
 
 def get_api_matches():
-    """Récupère les matchs et les cotes via The Odds API"""
     url = f"https://api.the-odds-api.com/v4/sports/{SPORT_KEY}/odds/"
     params = {
         'apiKey': ODDS_API_KEY,
@@ -41,43 +30,44 @@ def get_api_matches():
         r = requests.get(url, params=params)
         if r.status_code == 200:
             return r.json()
-        log.error(f"Erreur API Odds: {r.status_code}")
+        log.error(f"Erreur API: {r.status_code}")
     except Exception as e:
-        log.error(f"Erreur de connexion API: {e}")
+        log.error(f"Erreur connexion: {e}")
     return []
 
-def run_bot():
-    log.info("🚀 Bot en ligne (Mode API + Multi-Destinations)")
-    alerted_matches = set()
+def run():
+    log.info("=== BOT SETKA CUP (MODE API) - PRÊT ===")
+    seen_ids = set()
 
     while True:
-        matches = get_api_matches()
-        log.info(f"📡 Scan API : {len(matches)} matchs trouvés.")
+        try:
+            matches = get_api_matches()
+            log.info(f"Scan API : {len(matches)} matchs de Ping-Pong trouvés.")
 
-        for m in matches:
-            match_id = m['id']
-            if match_id in alerted_matches:
-                continue
+            for m in matches:
+                mid = m['id']
+                if mid in seen_ids: continue
 
-            p1 = m['home_team']
-            p2 = m['away_team']
-            
-            # --- BLOC ANALYSE (Simulation pour le test) ---
-            # Ici on forcera le signal pour vérifier que l'envoi double marche
-            log.info(f"Analyse en cours : {p1} vs {p2}")
-            
-            # Simulation : On génère un signal pour tester les deux destinations
-            msg = (f"<b>🔔 NOUVEAU SIGNAL</b>\n"
-                   f"━━━━━━━━━━━━━━━━━━━━\n"
-                   f"<b>{p1}</b> vs <b>{p2}</b>\n\n"
-                   f"🎯 Pari : {p1} - {SET1_ALERT_LABEL}")
-            
-            send_telegram(msg)
-            alerted_matches.add(match_id)
+                p1, p2 = m['home_team'], m['away_team']
+                
+                # Ici on filtre sur les ligues que tu aimes (Setka, TT Cup)
+                league = m.get('sport_title', '')
+                
+                # Message direct pour le pari 1er Set
+                msg = (f"<b>🏓 SIGNAL DETECTÉ : {league}</b>\n"
+                       f"━━━━━━━━━━━━━━━━━━━━\n"
+                       f"<b>{p1}</b> vs <b>{p2}</b>\n\n"
+                       f"🎯 <b>PARI : {p1} - {SET1_ALERT_LABEL}</b>")
 
-        # On attend 5 minutes pour ne pas dépasser le quota gratuit
-        log.info("⏳ En attente du prochain cycle (5 min)...")
+                send_telegram(msg)
+                seen_ids.add(mid)
+                log.info(f"✅ Alerte envoyée pour {p1} vs {p2}")
+
+        except Exception as e:
+            log.error(f"Erreur Loop: {e}")
+
+        # On attend 5 min (300s) pour ne pas exploser le quota gratuit
         time.sleep(300)
 
 if __name__ == "__main__":
-    run_bot()
+    run()
