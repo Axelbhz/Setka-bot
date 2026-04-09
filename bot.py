@@ -42,12 +42,14 @@ COMP_SECTION_NAMES = {
     "setka_cup_cz":  "Setka Cup. Czech Republic",
     "pro_league_cz": "Pro League. Czech Republic",
     "tt_cup_cz":     "TT-Cup. Czech Republic",
+    "setka_cup_ua":  "Setka Cup",
 }
 
 COMP_LABELS = {
     "setka_cup_cz":  "Setka Cup CZ",
     "pro_league_cz": "Pro League CZ",
     "tt_cup_cz":     "TT Cup CZ",
+    "setka_cup_ua":  "Setka Cup UA",
 }
 
 # ─────────────────────────────────────────────────────────────
