@@ -60,6 +60,7 @@ def run():
 
                 # Filtre : On ne garde que le Tennis de Table
                 sport_title = m.get('sport_title', '')
+                log.info(f"Sport détecté : {sport_title}")
                 if "table tennis" in sport_title.lower():
                     p1, p2 = m['home_team'], m['away_team']
                     
