@@ -15,7 +15,7 @@ ALERT_DESTINATIONS = [
 # La protection contre les mauvais matchs sera gérée dans le code principal.
 COMPETITIONS = [
     "setka_cup_cz",
-    # "setka_cup_ukraine",
+    "setka_cup_ukraine",
     # "setka_cup_intl",
     # "liga_pro_russia",
     # "pro_league_cz",
