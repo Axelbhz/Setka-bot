@@ -1,247 +1,83 @@
-#!/usr/bin/env python3
-"""
-Setka Cup Betting Bot - Version Optimisée
-"""
-
-import re
-import time
-import json
-import logging
-import threading
-from datetime import datetime, timezone
-from pathlib import Path
-
 import requests
-from bs4 import BeautifulSoup
+import time
+import logging
+from config import *
 
-# Import des réglages depuis config.py
-from config import (
-    TELEGRAM_BOT_TOKEN, ALERT_DESTINATIONS, COMPETITIONS, 
-    MIN_FAVORITE_ODDS, MAX_FAVORITE_ODDS, IGNORE_ODDS_FILTER, 
-    REQUIRE_FAVORITE, STRICT_DOMINATION_FILTER, MIN_POINT_DIFF_LAST_SET1,
-    STARTUP_MESSAGE_ENABLED, ENABLE_DAILY_RECAP,
-    SET1_ALERT_LABEL, MATCH_ALERT_LABEL
-)
-
+# Logging pour voir ce qui se passe dans la console
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("bot.log", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
+    level=logging.INFO, 
+    format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger(__name__)
 
-CHECK_INTERVAL_SECONDS = 60
-BILAN_FILE = Path("bilan.json")
-BASE_URL = "https://score-tennis.com"
-
-COMP_SECTION_NAMES = {
-    "setka_cup_cz":   "Setka Cup. Czech Republic",
-    "pro_league_cz":  "Pro League. Czech Republic",
-    "tt_cup_cz":      "TT-Cup. Czech Republic",
-    "setka_cup":      "Setka Cup",
-}
-
-COMP_LABELS = {
-    "setka_cup_cz":  "Setka Cup CZ",
-    "pro_league_cz": "Pro League CZ",
-    "tt_cup_cz":     "TT Cup CZ",
-    "setka_cup":     "Setka Cup",
-}
-
-def load_bilan() -> dict:
-    if BILAN_FILE.exists():
-        try: return json.loads(BILAN_FILE.read_text())
-        except: pass
-    return {"set1": {"won": 0, "lost": 0}, "match": {"won": 0, "lost": 0}, 
-            "week": {"set1": {"won": 0, "lost": 0}, "match": {"won": 0, "lost": 0}}}
-
-def save_bilan(b: dict):
-    BILAN_FILE.write_text(json.dumps(b, indent=2))
-
-alerted, tracking, seen = set(), {}, set()
-HEADERS = {"User-Agent": "Mozilla/5.0"}
-
-# --- FONCTIONS UTILITAIRES ---
-def send_telegram(message: str, destinations: list):
+def send_telegram(message: str):
+    """Envoie le message à toutes les destinations configurées"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    for dest in destinations:
-        try: requests.post(url, json={"chat_id": dest, "text": message, "parse_mode": "HTML"}, timeout=10)
-        except Exception as e: log.error(f"Erreur Telegram: {e}")
-
-def fetch_page(url: str) -> BeautifulSoup | None:
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        return BeautifulSoup(r.text, "html.parser")
-    except: return None
-
-# --- PARSING ET ANALYSE ---
-def parse_match_block(block_soup: BeautifulSoup, block_text: str, match_date: str, match_time: str, competition_key: str, section_name: str) -> dict | None:
-    # 1. Protection contre les mauvais blocs
-    if "face-to-face" not in block_text: return None
-
-    # 2. Extraction des cotes
-    w1_m, w2_m = re.search(r'W1[^:]*:\s*([\d.]+)', block_text), re.search(r'W2[^:]*:\s*([\d.]+)', block_text)
-    if not w1_m or not w2_m: return None
-    w1, w2 = float(w1_m.group(1)), float(w2_m.group(1))
-
-    # 3. Extraction des noms
-    player_links = block_soup.find_all("a", href=re.compile(r"/players/"))
-    if len(player_links) < 2: return None
-    p1, p2 = [" ".join(p.get_text().split()) for p in player_links[:2]]
-
-    # 4. H2H Global
-    h2h_m = re.search(r'(\d+)\s*:\s*(\d+)\s*\n?\s*score of recent face-to-face', block_text)
-    h2h_p1, h2h_p2 = (int(h2h_m.group(1)), int(h2h_m.group(2))) if h2h_m else (0, 0)
-
-    # 5. Score Set 1 (CORRECTION "BASE")
-    set1_p1 = set1_p2 = None
-    rows = block_soup.select("table tr")
-    for row in rows:
-        cols = [td.get_text(strip=True) for td in row.find_all("td")]
-        if len(cols) < 6 or not re.match(r'\d{2}\.\d{2}', cols[0]): continue
-        if "BASE" in cols: continue  # ← CORRECTION CRITIQUE
+    for chat_id in ALERT_DESTINATIONS:
         try:
-            set1_p1, set1_p2 = int(cols[2]), int(cols[3])
-            break
-        except: continue
+            payload = {
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML"
+            }
+            r = requests.post(url, json=payload, timeout=10)
+            if r.status_code == 200:
+                log.info(f"✅ Message envoyé à {chat_id}")
+            else:
+                log.error(f"❌ Erreur Telegram sur {chat_id}: {r.text}")
+        except Exception as e:
+            log.error(f"⚠️ Erreur de connexion Telegram: {e}")
 
-    return {
-        "id": f"{p1}_{p2}_{match_date}_{match_time}", "player1": p1, "player2": p2,
-        "time": match_time, "date": match_date, "competition": competition_key, "odds": [w1, w2],
-        "h2h": {"p1_wins": h2h_p1, "p2_wins": h2h_p2, "total": h2h_p1 + h2h_p2},
-        "set1_p1": set1_p1, "set1_p2": set1_p2, 
-        "p1_url": f"{BASE_URL}{player_links[0].get('href', '')}", "p2_url": f"{BASE_URL}{player_links[1].get('href', '')}"
+def get_api_matches():
+    """Récupère les matchs et les cotes via The Odds API"""
+    url = f"https://api.the-odds-api.com/v4/sports/{SPORT_KEY}/odds/"
+    params = {
+        'apiKey': ODDS_API_KEY,
+        'regions': 'eu',
+        'markets': 'h2h',
+        'oddsFormat': 'decimal'
     }
+    try:
+        r = requests.get(url, params=params)
+        if r.status_code == 200:
+            return r.json()
+        log.error(f"Erreur API Odds: {r.status_code}")
+    except Exception as e:
+        log.error(f"Erreur de connexion API: {e}")
+    return []
 
-def analyze_match(match: dict) -> dict | None:
-    h2h = match["h2h"]
-    # 1. Minimum 1 match pour pouvoir analyser le passé
-    if h2h["total"] < 1: return None
-    
-    # 2. Détermination du favori statistique (60%+)
-    win_rate_p1 = h2h["p1_wins"] / h2h["total"]
-    if win_rate_p1 >= 0.60:
-        fav_is_p1 = True
-    elif win_rate_p1 <= 0.40:
-        fav_is_p1 = False
-    else:
-        return None # Pas de favori à 60%, on ignore
+def run_bot():
+    log.info("🚀 Bot en ligne (Mode API + Multi-Destinations)")
+    alerted_matches = set()
 
-    # 3. RÉCUPÉRATION DU DERNIER MATCH (La ligne 0 du tableau H2H)
-    s1p1, s1p2 = match["set1_p1"], match["set1_p2"]
-    
-    # On a besoin des scores pour vérifier les deux conditions
-    if s1p1 is None or s1p2 is None: return None
-
-    # Condition A : Le favori a gagné le DERNIER MATCH 
-    # (Sur score-tennis, la première ligne du H2H est le dernier match joué)
-    fav_won_last_match = (s1p1 > s1p2) if fav_is_p1 else (s1p2 > s1p1) 
-    # Note : Dans notre parseur, on s'arrête à la première ligne, 
-    # donc fav_won_last_match est vrai si le score du 1er set est en sa faveur.
-    
-    # Condition B : Le favori a gagné le 1er SET du dernier match
-    # (Identique à la condition A dans notre logique de parsing actuelle)
-    fav_won_last_set1 = (s1p1 > s1p2) if fav_is_p1 else (s1p2 > s1p1)
-
-    if fav_won_last_match and fav_won_last_set1:
-        return {
-            "fav_name": match["player1"] if fav_is_p1 else match["player2"],
-            "und_name": match["player2"] if fav_is_p1 else match["player1"],
-            "fav_is_p1": fav_is_p1,
-            "h2h_wins": h2h["p1_wins"] if fav_is_p1 else h2h["p2_wins"],
-            "h2h_total": h2h["total"],
-            "last_s1_score": f"{s1p1}:{s1p2}" if fav_is_p1 else f"{s1p2}:{s1p1}",
-            "bet_type": "1er SET" 
-        }
-    
-    return None
-
-def fetch_matches_today(competition_key: str) -> list:
-    r = fetch_page(f"{BASE_URL}/up-games/")
-    if not r: return []
-    section_name = COMP_SECTION_NAMES.get(competition_key, "")
-    today_str = datetime.now(tz=timezone.utc).strftime("%d.%m")
-    matches = []
-    
-    # CORRECTION ROBUSTESSE LIGUE
-    blocks = re.split(r'(\d{2}\.\d{2}\s+\d{2}:\d{2})', r.decode_contents())
-    i = 1
-    while i < len(blocks) - 1:
-        header, block_html = blocks[i], blocks[i + 1]
-        if today_str not in header:
-            i += 2; continue
-        
-        block_soup = BeautifulSoup(block_html, "html.parser")
-        block_text = block_soup.get_text(separator="\n").strip()
-        
-        # On vérifie si la section cible est dans les premières lignes du texte nettoyé
-        if section_name.lower() not in "\n".join(block_text.split("\n")[:3]).lower():
-            i += 2; continue
-
-        match = parse_match_block(block_soup, block_text, today_str, header.split()[1], competition_key, section_name)
-        if match: matches.append(match)
-        i += 2
-    return matches
-
-def format_alert(a: dict) -> str:
-    comp = COMP_LABELS.get(a["competition"], a["competition"])
-    
-    return (f"<b>🎯 SIGNAL : DOMINATION CONFIRMÉE</b>\n"
-            f"<b>{comp}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>{a['player1']}</b> vs <b>{a['player2']}</b>\n"
-            f"Heure : {a['time']}\n\n"
-            f"<b>🔥 PARI : {a['fav_name']} - GAGNE 1er SET</b>\n\n"
-            f"• Winrate H2H : {a['h2h_wins']}/{a['h2h_total']} ({(a['h2h_wins']/a['h2h_total'])*100:.0f}%)\n"
-            f"• Dernier Match : VICTOIRE\n"
-            f"• Dernier Set 1 : GAGNÉ ({a['last_s1_score']})")
-
-def process_alert(match: dict):
-    if match["id"] in alerted: return
-    
-    verdict = analyze_match(match)
-    if not verdict: return
-    
-    # On fusionne les infos pour l'alerte
-    analysis = {**match, **verdict}
-    
-    send_telegram(format_alert(analysis), ALERT_DESTINATIONS)
-    alerted.add(match["id"])
-def check_results():
-    if not tracking: return
-    bilan, changed = load_bilan(), False
-    soup = fetch_page(f"{BASE_URL}/games/")
-    if not soup: return
-    content = soup.get_text().lower()
-    for mid, a in list(tracking.items()):
-        if mid in seen or a["player1"].split()[0].lower() not in content: continue
-        # Logique de résultat simplifiée pour la stabilité
-        seen.add(mid); changed = True
-    if changed: save_bilan(bilan)
-
-def run():
-    if STARTUP_MESSAGE_ENABLED: 
-        send_telegram("<b>🚀 Bot Setka Cup Ready</b>", ALERT_DESTINATIONS)
-    
-    log.info("=== DEMARRAGE DU BOT ===")
-    
     while True:
-        try:
-            for comp in COMPETITIONS:
-                log.info(f"Scan de la ligue : {comp}...") # <-- Ce log va s'afficher
-                matches = fetch_matches_today(comp)
-                log.info(f"  > {len(matches)} matchs trouves.") # <-- Ce log aussi
-                for match in matches: 
-                    process_alert(match)
-            
-            check_results()
-        except Exception as e: 
-            log.error(f"Loop Error: {e}")
-            
-        log.info(f"Pause de {CHECK_INTERVAL_SECONDS}s avant le prochain scan...")
-        time.sleep(CHECK_INTERVAL_SECONDS)
+        matches = get_api_matches()
+        log.info(f"📡 Scan API : {len(matches)} matchs trouvés.")
 
-if __name__ == "__main__": run()
+        for m in matches:
+            match_id = m['id']
+            if match_id in alerted_matches:
+                continue
+
+            p1 = m['home_team']
+            p2 = m['away_team']
+            
+            # --- BLOC ANALYSE (Simulation pour le test) ---
+            # Ici on forcera le signal pour vérifier que l'envoi double marche
+            log.info(f"Analyse en cours : {p1} vs {p2}")
+            
+            # Simulation : On génère un signal pour tester les deux destinations
+            msg = (f"<b>🔔 NOUVEAU SIGNAL</b>\n"
+                   f"━━━━━━━━━━━━━━━━━━━━\n"
+                   f"<b>{p1}</b> vs <b>{p2}</b>\n\n"
+                   f"🎯 Pari : {p1} - {SET1_ALERT_LABEL}")
+            
+            send_telegram(msg)
+            alerted_matches.add(match_id)
+
+        # On attend 5 minutes pour ne pas dépasser le quota gratuit
+        log.info("⏳ En attente du prochain cycle (5 min)...")
+        time.sleep(300)
+
+if __name__ == "__main__":
+    run_bot()
