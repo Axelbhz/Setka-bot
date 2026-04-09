@@ -13,6 +13,7 @@ ALERT_DESTINATIONS = [
 # ── Competitions surveillees ────────────────────────────────────
 COMPETITIONS = [
     "setka_cup_cz",
+    "setka_cup",
     # "pro_league_cz",
     # "tt_cup_cz",
 ]
