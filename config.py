@@ -1,5 +1,5 @@
 # --- CONFIGURATION API ---
-ODDS_API_KEY = "TA_CLE_ICI"
+ODDS_API_KEY = "6c7ec311bdd83746b6b67a05f1f308d8"
 SPORT_KEY = "table_tennis"
 
 # --- TELEGRAM ---
