@@ -23,8 +23,8 @@ MIN_FAVORITE_ODDS = 1.25
 MAX_FAVORITE_ODDS = 1.70
 
 # ── Options de filtrage ─────────────────────────────────────────
-IGNORE_ODDS_FILTER = False
-REQUIRE_FAVORITE   = True
+IGNORE_ODDS_FILTER = True
+REQUIRE_FAVORITE   = False
 
 # Filtre marge de securite (Friction Zero)
 # True  = ignore les matchs ou le favori a gagne le set1 avec ecart faible
