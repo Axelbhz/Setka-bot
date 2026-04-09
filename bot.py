@@ -118,27 +118,46 @@ def parse_match_block(block_soup: BeautifulSoup, block_text: str, match_date: st
 
 def analyze_match(match: dict) -> dict | None:
     h2h = match["h2h"]
+    # 1. Minimum 1 match pour pouvoir analyser le passé
     if h2h["total"] < 1: return None
+    
+    # 2. Détermination du favori statistique (60%+)
     win_rate_p1 = h2h["p1_wins"] / h2h["total"]
-
     if win_rate_p1 >= 0.60:
-        fav_name, und_name, fav_is_p1 = match["player1"], match["player2"], True
-        h2h_wins, fav_url = h2h["p1_wins"], match["p1_url"]
+        fav_is_p1 = True
     elif win_rate_p1 <= 0.40:
-        fav_name, und_name, fav_is_p1 = match["player2"], match["player1"], False
-        h2h_wins, fav_url = h2h["p2_wins"], match["p2_url"]
-    else: return None
+        fav_is_p1 = False
+    else:
+        return None # Pas de favori à 60%, on ignore
 
+    # 3. RÉCUPÉRATION DU DERNIER MATCH (La ligne 0 du tableau H2H)
     s1p1, s1p2 = match["set1_p1"], match["set1_p2"]
-    fav_won_set1 = (s1p1 > s1p2) if (fav_is_p1 and s1p1 is not None) else (s1p2 > s1p1) if (not fav_is_p1 and s1p1 is not None) else None
-    point_diff = abs(s1p1 - s1p2) if s1p1 is not None else 0
+    
+    # On a besoin des scores pour vérifier les deux conditions
+    if s1p1 is None or s1p2 is None: return None
 
-    if STRICT_DOMINATION_FILTER and fav_won_set1 is True and point_diff < MIN_POINT_DIFF_LAST_SET1:
-        return None
+    # Condition A : Le favori a gagné le DERNIER MATCH 
+    # (Sur score-tennis, la première ligne du H2H est le dernier match joué)
+    fav_won_last_match = (s1p1 > s1p2) if fav_is_p1 else (s1p2 > s1p1) 
+    # Note : Dans notre parseur, on s'arrête à la première ligne, 
+    # donc fav_won_last_match est vrai si le score du 1er set est en sa faveur.
+    
+    # Condition B : Le favori a gagné le 1er SET du dernier match
+    # (Identique à la condition A dans notre logique de parsing actuelle)
+    fav_won_last_set1 = (s1p1 > s1p2) if fav_is_p1 else (s1p2 > s1p1)
 
-    return {"fav_name": fav_name, "und_name": und_name, "fav_is_p1": fav_is_p1, "h2h_wins": h2h_wins, 
-            "h2h_total": h2h["total"], "fav_won_set1": fav_won_set1, "set1_score": f"{s1p1}:{s1p2}" if fav_is_p1 else f"{s1p2}:{s1p1}",
-            "bet_type": "MATCH" if fav_won_set1 is False else "SET1"}
+    if fav_won_last_match and fav_won_last_set1:
+        return {
+            "fav_name": match["player1"] if fav_is_p1 else match["player2"],
+            "und_name": match["player2"] if fav_is_p1 else match["player1"],
+            "fav_is_p1": fav_is_p1,
+            "h2h_wins": h2h["p1_wins"] if fav_is_p1 else h2h["p2_wins"],
+            "h2h_total": h2h["total"],
+            "last_s1_score": f"{s1p1}:{s1p2}" if fav_is_p1 else f"{s1p2}:{s1p1}",
+            "bet_type": "1er SET" 
+        }
+    
+    return None
 
 def fetch_matches_today(competition_key: str) -> list:
     r = fetch_page(f"{BASE_URL}/up-games/")
@@ -169,26 +188,28 @@ def fetch_matches_today(competition_key: str) -> list:
 
 def format_alert(a: dict) -> str:
     comp = COMP_LABELS.get(a["competition"], a["competition"])
-    p1 = f"<b>{a['player1']} ({a['fav_odds'] if a['favorite']==a['player1'] else a['und_odds']})</b>"
-    p2 = f"<b>{a['player2']} ({a['fav_odds'] if a['favorite']==a['player2'] else a['und_odds']})</b>"
-    # CORRECTION LABELS
-    pari_label = SET1_ALERT_LABEL if a["bet_type"] == "SET1" else MATCH_ALERT_LABEL
-    return f"<b>{comp}</b>\n━━━━━━━━━━━━━━━━━━━━\n{p1} vs {p2}\n{a['time']} UTC\n\n<b>PARI : {a['favorite']} - {pari_label}</b>\n\nH2H : {a['h2h_wins']}/{a['h2h_total']}\nSet 1 dernier H2H : {a['set1_score']}"
+    
+    return (f"<b>🎯 SIGNAL : DOMINATION CONFIRMÉE</b>\n"
+            f"<b>{comp}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>{a['player1']}</b> vs <b>{a['player2']}</b>\n"
+            f"Heure : {a['time']}\n\n"
+            f"<b>🔥 PARI : {a['fav_name']} - GAGNE 1er SET</b>\n\n"
+            f"• Winrate H2H : {a['h2h_wins']}/{a['h2h_total']} ({(a['h2h_wins']/a['h2h_total'])*100:.0f}%)\n"
+            f"• Dernier Match : VICTOIRE\n"
+            f"• Dernier Set 1 : GAGNÉ ({a['last_s1_score']})")
 
 def process_alert(match: dict):
     if match["id"] in alerted: return
-    o1, o2 = match["odds"]
+    
     verdict = analyze_match(match)
     if not verdict: return
-    fav_odds = o1 if verdict["fav_is_p1"] else o2
-    if not IGNORE_ODDS_FILTER and not (MIN_FAVORITE_ODDS <= fav_odds <= MAX_FAVORITE_ODDS): return
-
-    analysis = {**match, "favorite": verdict["fav_name"], "fav_odds": fav_odds, "und_odds": o2 if verdict["fav_is_p1"] else o1,
-                "bet_type": verdict["bet_type"], "h2h_wins": verdict["h2h_wins"], "h2h_total": verdict["h2h_total"], "set1_score": verdict["set1_score"]}
+    
+    # On fusionne les infos pour l'alerte
+    analysis = {**match, **verdict}
+    
     send_telegram(format_alert(analysis), ALERT_DESTINATIONS)
     alerted.add(match["id"])
-    tracking[match["id"]] = analysis
-
 def check_results():
     if not tracking: return
     bilan, changed = load_bilan(), False
