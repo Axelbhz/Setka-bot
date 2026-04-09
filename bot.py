@@ -18,7 +18,8 @@ from config import (
     MIN_FAVORITE_ODDS, MAX_FAVORITE_ODDS, IGNORE_ODDS_FILTER,
     REQUIRE_FAVORITE, STRICT_DOMINATION_FILTER, MIN_POINT_DIFF_LAST_SET1,
     STARTUP_MESSAGE_ENABLED, ENABLE_DAILY_RECAP,
-    SET1_ALERT_LABEL, MATCH_ALERT_LABEL
+    SET1_ALERT_LABEL, MATCH_ALERT_LABEL,
+    PHPSESSID
 )
 
 logging.basicConfig(
@@ -75,25 +76,24 @@ alerted: set  = set()   # match IDs déjà alertés
 tracking: dict = {}     # match IDs en suivi de résultat
 seen: set     = set()   # match IDs dont le résultat a été enregistré
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-]
-_ua_index = 0
+UPGAMES_URL = "https://score-tennis.com/up-games/?champ=all"
 
-def _next_headers() -> dict:
-    global _ua_index
-    ua = USER_AGENTS[_ua_index % len(USER_AGENTS)]
-    _ua_index += 1
+def _make_headers() -> dict:
     return {
-        "User-Agent": ua,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Cache-Control": "max-age=0",
+        "Referer": "https://score-tennis.com/up-games/?champ=all",
         "Upgrade-Insecure-Requests": "1",
+        "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "same-origin",
+        "Cookie": f"PHPSESSID={PHPSESSID}",
     }
 
 # ─────────────────────────────────────────────────────────────
@@ -118,7 +118,7 @@ def send_telegram(message: str, destinations: list):
 
 def fetch_page(url: str) -> BeautifulSoup | None:
     try:
-        r = requests.get(url, headers=_next_headers(), timeout=15)
+        r = requests.get(url, headers=_make_headers(), timeout=15)
         return BeautifulSoup(r.text, "html.parser")
     except Exception as e:
         log.error(f"fetch_page({url}): {e}")
@@ -241,7 +241,7 @@ def fetch_matches_today(competition_key: str) -> list:
     Cela garantit qu'un match d'une autre compétition ne peut jamais
     être labellisé comme appartenant à la compétition courante.
     """
-    soup_full = fetch_page(f"{BASE_URL}/up-games/")
+    soup_full = fetch_page(UPGAMES_URL)
     if not soup_full:
         return []
 
